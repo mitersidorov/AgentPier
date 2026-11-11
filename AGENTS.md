@@ -1,33 +1,20 @@
-# AgentPier Codex instructions
+# AgentPier repository instructions
 
-## Project boundaries
+The canonical orchestration rules are in `orchestrator/instructions.md`. Universal profiles live in `agents/`; reusable skills live in `skills/`. Do not use generated project-local instructions as a source of truth.
 
-- AgentPier is a local project manager and MCP interface. Preserve the user-led analysis → explicit approval → execution → review loop. Never publish or merge project changes as part of an ordinary task.
-- The Manager is NestJS and MySQL. Keep schema changes migration-based (`synchronize: false`). MySQL is required; do not substitute SQLite or PostgreSQL.
-- Codex app-server runs on the Mac host, outside Docker. Never package Codex CLI/app-server or add a Host Agent to Compose.
-- Preserve user files and local Git changes. Validate project-bound paths before filesystem operations.
-- Never claim a Codex session, backup, restore or Git change occurred unless the operation ran and returned a verified result.
-- Never store secrets in tasks, logs, memory or prompts. Environment secrets belong only in ignored `.env`.
+## Manager application
 
-## NestJS conventions
+- NestJS application source is under `apps/manager/src/`; migrations are under `apps/manager/migrations/`.
+- Keep MySQL and `synchronize: false`. Make schema changes with reversible TypeORM migrations.
+- Keep controllers thin, validate inputs at boundaries, and implement business rules in domain services.
+- Codex app-server runs on the Mac, outside Docker. Send host absolute paths through its WebSocket protocol; do not mount user repositories into the Manager container or add a Host Agent.
+- Start each managed task in a new app-server thread. Never take over an existing user session.
+- Analysis is `read-only`. Execution requires a persisted user-approved plan and uses a new local branch without discarding user changes.
+- Never push, create a PR or merge project work without a separate user instruction.
+- Never put credentials in database records, events, messages or prompts.
 
-- Keep controllers thin and put orchestration in services.
-- Put TypeORM entities under `src/<domain>/entities/` and migrations under `src/migrations/`.
-- Inject `Repository<Entity>` directly; avoid a repository wrapper without a concrete need.
-- Keep shared infrastructure in `src/common/` and domain boundaries in `src/<domain>/`.
-- Validate all incoming DTOs, reject unknown fields where practical, and return consistent HTTP errors.
-- Add new environment variables to `.env.example`; update API/domain/operational docs with behavior changes.
+## Verification
 
-## Frontend guidance
-
-There is no standalone Angular app in this repository yet. If one is introduced, follow `.codex/frontend-guidelines.md` and the reusable Angular skills in `.agents/skills/`. The current dashboard is served by NestJS.
-
-## Reusable skills
-
-Backend and frontend reusable skills are versioned under `.agents/skills/`. Apply the closest relevant skill when changing its area; adapt instructions to AgentPier rather than importing unrelated Znak services or authentication assumptions.
-
-## Verification and delivery
-
-- Run checks proportionate to changed behavior. For runtime or integration changes, test the actual local service route where the needed services are available.
-- Review the final diff and report exact commands/results and unverified integrations.
-- Follow the user's explicit delivery instructions for branch, commit and merge; those instructions override generic workflow preferences.
+- Test the real MCP route and Codex app-server WebSocket for orchestration changes. A successful build or HTTP health probe alone is insufficient.
+- Run focused tests, lint and build; for runtime changes verify Compose and the actual database migration state.
+- Report integrations that were not exercised. Do not present records or mock output as real agent results.

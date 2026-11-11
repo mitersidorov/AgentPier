@@ -8,6 +8,7 @@ services:
       MYSQL_PASSWORD: ${DB_PASSWORD:-local-agentpier}
     volumes:
       - mysql_data:/var/lib/mysql
+      - ./docker/mysql/init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-p${DB_PASSWORD:-local-agentpier}"]
       interval: 5s
@@ -22,7 +23,7 @@ services:
     volumes:
       - minio_data:/data
     ports:
-      - "9001:9001"
+      - "127.0.0.1:9001:9001"
   create-bucket:
     image: amazon/aws-cli:latest
     depends_on:
@@ -53,9 +54,13 @@ services:
       S3_SECRET_KEY: ${S3_SECRET_KEY:-local-agentpier-secret}
       S3_BUCKET: ${S3_BUCKET:-agentpier-backups}
       S3_FORCE_PATH_STYLE: "true"
+      S3_PREFIX: ${S3_PREFIX:-agentpier/}
+      BACKUP_SCHEDULE: ${BACKUP_SCHEDULE:-0 2 * * *}
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-30}
+      RESTORE_TEST_DB: ${RESTORE_TEST_DB:-agentpier_restore_test}
       CODEX_APP_SERVER_URL: ws://host.docker.internal:4500
     ports:
-      - "${MANAGER_PORT:-3100}:3000"
+      - "127.0.0.1:${MANAGER_PORT:-3100}:3000"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:

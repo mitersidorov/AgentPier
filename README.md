@@ -1,61 +1,88 @@
-# AgentPier MVP
+# AgentPier
 
-AgentPier is a local project manager and MCP endpoint for a human-led Codex workflow. It stores project context, verbatim requests, analysis task records, user-approved plans and results in MySQL. The assistant discusses and approves plans with the user; AgentPier does not publish, push, create pull requests or merge project changes.
+AgentPier is a local project manager and MCP server for Codex work across several local applications and Git repositories. It stores project context and task history in MySQL, runs fresh Codex app-server threads for analysis and approved implementation, and leaves changes in local branches for the user to review. It never pushes, opens pull requests, or merges as part of a normal task.
 
-## Current support
+## Repository layout
 
-The local MVP includes a NestJS API and browser dashboard, MySQL persistence and migrations, project/application/repository/instruction/memory/task records, two seeded universal profiles, local path validation, a Streamable HTTP MCP JSON-RPC endpoint, and a real WebSocket handshake check to the host app-server. It stores analysis requests and prevents plan approval without `explicitlyConfirmed: true`.
+- `apps/manager/` — NestJS API, MCP endpoint, orchestration, integrations, and migrations.
+- `agents/backend/` and `agents/frontend/` — the two universal profiles available on first boot.
+- `skills/` — versioned shared skills injected into sessions selected by each profile.
+- `orchestrator/instructions.md` — rules injected into each managed session.
+- `docs/architecture/` — C4 Context and Container diagrams.
+- `docker-compose.yml` — Manager, MySQL, MinIO, and bucket initialization.
 
-Agent session orchestration, Codex turn streaming/cancellation, Git branch creation and diff reporting, full S3 backup/restore lifecycle and restore drills are not yet implemented. An analysis record is not an agent analysis result. These limits are explicit so the UI/MCP does not claim work happened when it did not. The repository currently contains no separate Angular frontend application; the UI is a small local dashboard served by NestJS.
+Profile and skill files are the source of truth. New sessions read them on every launch and save a content hash in the session record. Project-specific instructions and confirmed memory are added to the session prompt. Additional profiles can be added as directories under `agents/` without changing Manager code.
 
 ## Run locally
 
-Requirements: Docker Desktop with Compose and a Mac host running Codex app-server when session checks are needed.
+Requirements: macOS, Docker Desktop with Compose, Node 22 for local development, and Codex CLI/app-server installed on the Mac.
 
 ```sh
 cp .env.example .env
-# For the Compose defaults, set DB_PASSWORD=local-agentpier and S3_ACCESS_KEY=agentpierlocal,
-# S3_SECRET_KEY=local-agentpier-secret in .env, or edit docker-compose.yml defaults.
+# Set a local DB_PASSWORD and optional S3-compatible credentials in .env.
 docker compose up --build -d
 docker compose ps
 ```
 
-Open [http://localhost:3100](http://localhost:3100) (or the `MANAGER_PORT` configured in `.env`). MySQL data persists in the `mysql_data` volume; MinIO data persists in `minio_data`. Migrations run on Manager startup. Use `docker compose down` to stop while preserving data. `docker compose down -v` deletes local database and object data.
+Open <http://localhost:3100>. Compose persists MySQL and MinIO in named volumes and runs TypeORM migrations before Manager starts. `docker compose down` keeps data; `docker compose down -v` removes the local database and backups.
 
-For standalone development, use Node 22+, a MySQL 8 database and `npm ci`, set `.env`, run `npm run migration:run`, then `npm run start:dev`.
+For local development, install dependencies with `npm ci`, point `.env` at a MySQL server, then run `npm run migration:run` and `npm run start:dev`.
 
-## Register projects and repositories
+## Codex app-server and local paths
 
-Create a project with an absolute Mac path, then register `app` and `repository` records with its `projectId`, purpose, absolute path and `remoteUrl`. App/repository paths must remain under the registered project path. This is a local clone registry; remote cloning is not implemented. Multiple apps and repositories can be registered per project.
+Run the app-server on macOS, outside Docker, listening on port 4500. Manager uses:
 
-The API stores generic domain records at `/api/records/:kind` (kinds: `project`, `app`, `repository`, `instruction`, `skill`, `memory`, `task`). Read with `/api/records?kind=project&projectId=…`; update with `PUT /api/records/:id`. See `/docs` for the NestJS API explorer.
+- Docker → Mac: `ws://host.docker.internal:4500`
+- Mac-local client → app-server: `ws://127.0.0.1:4500`
+- readiness and health: `http://host.docker.internal:4500/readyz` and `/healthz` from Manager's network namespace.
 
-## Workflow and MCP
+`manager_status` checks both HTTP endpoints and opens a real WebSocket connection with the app-server JSON-RPC `initialize` method. An HTTP 200 alone does not mean session control is working. Check `GET /api/status` or call MCP `manager_status` for the concrete failure reason.
 
-The dashboard and API can preserve a verbatim request as a task using `POST /api/projects/:id/analyze`. It creates an `analysis` record only; no agent has run yet. An approved plan is stored with `POST /api/tasks/:id/approve` and a body containing `{ "plan": { "explicitlyConfirmed": true, "steps": [] } }`. A missing explicit confirmation is rejected.
+Register absolute **Mac paths**. The Manager container does not mount project checkouts. It sends the saved path in `thread/start` and `turn/start`; the host app-server resolves that exact path on the Mac. Applications and repositories must remain under the registered project root. Verify the intended path before analysis.
 
-Configure local MCP clients to use Streamable HTTP at `http://localhost:3100/mcp` (or the configured `MANAGER_PORT`). The MCP methods `initialize`, `tools/list` and `tools/call` are served by AgentPier itself. Tools include Manager status, record listing/creation, request analysis record creation and plan approval. Manager status checks `/readyz`, `/healthz` and attempts a real WebSocket handshake to `ws://host.docker.internal:4500`.
+The installed Codex CLI accepts remote app-server connections. In an IDE terminal, a user can open the managed thread by its saved Codex session ID:
 
-Start app-server on the Mac separately and configure it to listen on port 4500 with HTTP readiness endpoints. In Docker, Manager sends the Mac absolute path as a string to app-server; it does not mount the project into the container. The host app-server must be configured to allow the intended local workspace paths. On macOS outside Docker, use a reachable host URL instead of `host.docker.internal`.
+```sh
+codex resume <codex-session-id> --remote ws://127.0.0.1:4500 -C /absolute/mac/project/path
+```
 
-The seeded profiles are exactly **Backend developer** and **Frontend developer**. Shared, versioned instructions and skills live in `.agents/skills/`; frontend guidance is in `.codex/frontend-guidelines.md`. Project-specific instructions are stored as project-linked records. New sessions are not yet started, so this repository's guidance is not yet injected into a live session.
+`codex agents --remote ws://127.0.0.1:4500` opens the remote agent list. Manager always creates new threads; it does not take over existing sessions.
 
-## Data domains
+## MCP
 
-See [docs/domain-model.md](docs/domain-model.md) for record relationships, knowledge provenance, path handling, and boundaries. All persistent records use MySQL `manager_records`; `kind`, optional project link, display name and JSON `data` separate the domains while allowing records to evolve. MySQL is configured with `synchronize: false` and schema migration support.
+The local Streamable HTTP endpoint is `http://localhost:3100/mcp`. It implements MCP `initialize`, `tools/list`, and `tools/call` through the same NestJS services and MySQL used by the UI. The tools cover project/application registration, profile and context reads, analysis, planning, explicit approval, execution, messages, cancellation, results, and backups. `docs/mcp.md` lists tool arguments and an example client setup.
 
-## Backups
+**ChatGPT connection limitation:** ChatGPT's custom MCP apps connect to remote HTTPS endpoints; they cannot connect directly to `localhost`. OpenAI's current guidance for a developer machine is to connect through its Secure MCP Tunnel. This repository does not start a tunnel or expose the local endpoint, consistent with the local-only boundary. Therefore local MCP calls are verified here, but ChatGPT registration and calling AgentPier from ChatGPT require a separately available Secure MCP Tunnel and workspace permission. Do not enter `http://localhost:3100/mcp` as a ChatGPT remote server URL and expect it to work. See [OpenAI's MCP connection guide](https://help.openai.com/en/articles/12584461-connecting-custom-mcp-servers-in-chatgpt).
 
-Compose includes a local MinIO S3-compatible service and bucket initialization so storage can be configured locally. Backup scheduling, S3 upload/list/download, restore into a test database and retention enforcement are **not implemented or verified yet**. No cloud credentials are included. Configure S3 credentials only in local `.env`; never commit that file. Do not treat the presence of MinIO as evidence a backup exists.
+## Projects and workflow
 
-## Architecture diagrams
+Register a project with an absolute local root. Then register one `repository` record per Git clone and one `app` record per application, linking each app to its repository. A project can contain multiple apps and repositories. Remote URLs are metadata; local branch and status operations use Git through the host app-server. Cloning a remote into a new local path is not yet exposed as a Manager operation.
 
-See [docs/architecture.md](docs/architecture.md) for C4 Context and Container diagrams, service responsibilities, local path semantics and app-server diagnostics.
+The workflow is:
 
-## Configuration and diagnostics
+1. Call `analyze_task` with the verbatim user request. Manager selects backend/frontend profiles per application and starts new read-only threads. It saves thread IDs, profile and project instruction hashes, events, messages, and reports.
+2. Discuss the analysis with the user and use `save_plan` to store a draft. Analysis must finish before planning.
+3. Call `approve_plan` only after explicit user confirmation (`userConfirmed: true`). Manager stores the approved plan separately and refuses execution before approval.
+4. Call `execute_task`. Manager validates the dependency graph, serializes tasks targeting the same checkout, creates a new local branch per step, starts a workspace-write session, and passes completed dependency results into downstream prompts.
+5. Poll status/messages/results. Answer app-server user-input requests or send further instructions. Cancel interrupts active turns and retains history.
+6. Review changed files, branch names, diff summaries, and reported checks in the local IDE. Push, PR, and merge remain a separate user decision.
 
-Copy `.env.example` to `.env`. `GET /api/status` includes database/Manager and the WebSocket result, with a concrete reason when app-server cannot be reached. Check `docker compose logs manager mysql minio` for local diagnostics. API/MCP responses do not include environment credentials.
+Status values include `analysis_running`, `analysis_complete`, `plan_draft`, `approved`, `executing`, `blocked`, `cancelled`, and `review_ready`. A blocked task with an approved plan can be retried without losing its request or plan.
 
-## Codex guidance
+## Memory and data
 
-`AGENTS.md` is the project instruction entry point. Reusable backend skills are in `.agents/skills/`; selected frontend instructions and skills are included for future frontend work. They were adapted from the adjacent Znak backend and portal frontend project and are committed as local files, not symlinks. Claude-only `.claude/` instructions remain separate and are not part of AgentPier's Codex workflow.
+MVP records are stored in the MySQL `manager_records` table with a kind, project association, JSON data and timestamps. Domain boundaries and provenance are described in [docs/domain-model.md](docs/domain-model.md). Confirmed context is passed into new analysis sessions; agent output is kept as output and is not automatically promoted to confirmed memory. Do not store secrets in project notes or prompts.
+
+## Backups and restore
+
+Compose includes MinIO and creates the configured bucket. Set `S3_ENDPOINT`, `S3_REGION`, `S3_ACCESS_KEY`, `S3_SECRET_KEY`, `S3_BUCKET`, and optional `S3_PREFIX`, `BACKUP_SCHEDULE`, `BACKUP_RETENTION_DAYS`, and `RESTORE_TEST_DB` in the local `.env`. The backup tool captures a consistent logical MySQL snapshot, compresses it, uploads it with a SHA-256 checksum, journals the outcome, and prunes expired objects. A verified backup downloads the object, restores it into the isolated `agentpier_restore_test` database, and compares each table's row count and content checksum.
+
+Call MCP `backup_database` with `verifyRestore: true` to run the full upload/list/download/restore verification. Compose creates the isolated restore database and grants access on a fresh MySQL volume. For an existing volume, apply `docker/mysql/init/10-restore-test.sh` once inside the MySQL container. Real cloud S3 credentials have not been checked; local MinIO is the integration target.
+
+For restore operations and limits, see [docs/backup-restore.md](docs/backup-restore.md).
+
+## Checks and limits
+
+Run `npm run build`, `npm test -- --runInBand`, and `npm run lint`. The system has been exercised locally against Compose/MySQL/MinIO and a real WebSocket app-server. ChatGPT itself cannot reach this local server without Secure MCP Tunnel, and real cloud S3 credentials are not configured. Remote GitHub operations and remote cloning are outside the local MVP. The dashboard is a small Nest-served UI; there is no separate Angular application in this repository.
+
+See [docs/architecture/c4-context.md](docs/architecture/c4-context.md), [docs/architecture/c4-container.md](docs/architecture/c4-container.md), and [docs/mcp.md](docs/mcp.md).
