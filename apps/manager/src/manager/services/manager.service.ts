@@ -1,0 +1,332 @@
+import { validReleaseOperations } from '../../tasks/types/release-operation.type';
+import { BadRequestException, Injectable, NotFoundException, Optional } from '@nestjs/common';
+import { InjectRepository } from '@nestjs/typeorm';
+import { randomUUID } from 'node:crypto';
+import { isAbsolute, relative, resolve } from 'node:path';
+import { In, Not, Repository } from 'typeorm';
+import { ManagerRecord } from '../entities/manager-record.entity';
+import { CodexAppServerService } from '../../integrations/codex/services/codex-app-server.service';
+
+@Injectable()
+export class ManagerService {
+  constructor(
+    @InjectRepository(ManagerRecord) private readonly records: Repository<ManagerRecord>,
+    @Optional() private readonly codex?: CodexAppServerService,
+  ) {}
+
+  list(kind?: string, projectId?: string) {
+    return this.records.find({
+      where: { ...(kind ? { kind } : {}), ...(projectId ? { projectId } : {}) },
+      order: { createdAt: 'DESC' },
+    });
+  }
+
+  async databaseStatus() {
+    try {
+      await this.records.count();
+      return { connected: true as const };
+    } catch (error) {
+      return { connected: false as const, reason: error instanceof Error ? error.message : 'MySQL query failed' };
+    }
+  }
+
+  async get(id: string) {
+    const row = await this.records.findOneBy({ id });
+    if (!row) throw new NotFoundException(`Record ${id} not found`);
+    return row;
+  }
+
+  async create(kind: string, body: Record<string, any>, projectId?: string) {
+    this.validateKind(kind);
+    const data = { ...body };
+    this.assertNoSecrets(data);
+    const name = typeof data.name === 'string' ? data.name : null;
+    if (kind === 'app' || kind === 'repository') await this.validateLocalPath(data.path, projectId);
+    if (kind === 'project' && data.path) await this.validateLocalPath(data.path);
+    if (kind === 'repository' && data.remoteUrl) this.validateRemoteUrl(data.remoteUrl);
+    const row = this.records.create({ id: randomUUID(), kind, projectId: projectId || null, name, data });
+    return this.records.save(row);
+  }
+
+  async update(id: string, body: Record<string, any>) {
+    const row = await this.get(id);
+    if (row.kind === 'agent-profile') throw new BadRequestException('Built-in agent profiles cannot be edited');
+    const data = { ...row.data, ...body };
+    this.assertNoSecrets(data);
+    if (['app', 'repository', 'project'].includes(row.kind) && data.path)
+      await this.validateLocalPath(data.path, row.projectId || undefined);
+    if (row.kind === 'repository' && data.remoteUrl) this.validateRemoteUrl(data.remoteUrl);
+    row.data = data;
+    row.name = typeof data.name === 'string' ? data.name : row.name;
+    return this.records.save(row);
+  }
+
+  async updateProfileDefaultModel(role: string, defaultModel: string, defaultReasoningEffort = 'medium') {
+    const profile = (await this.list('agent-profile')).find((candidate) => candidate.data.role === role);
+    if (!profile) throw new NotFoundException(`Agent profile ${role} not found`);
+    profile.data = { ...profile.data, defaultModel, defaultReasoningEffort };
+    return this.records.save(profile);
+  }
+
+  async deleteProjectCascade(projectId: string) {
+    const project = await this.get(projectId);
+    if (project.kind !== 'project') throw new BadRequestException('projectId must refer to a project');
+    await this.stopProjectTurns(projectId);
+    return this.records.manager.transaction(async (transaction) => {
+      const records = transaction.getRepository(ManagerRecord);
+      const project = await records.findOneBy({ id: projectId });
+      if (!project) throw new NotFoundException(`Record ${projectId} not found`);
+      if (project.kind !== 'project') throw new BadRequestException('projectId must refer to a project');
+
+      const dependents = await records.delete({ projectId, kind: Not(In(['project', 'agent-profile'])) });
+      const deletedProject = await records.delete({ id: projectId, kind: 'project' });
+      return {
+        deleted: true,
+        projectId,
+        deletedRecords: (dependents.affected || 0) + (deletedProject.affected || 0),
+      };
+    });
+  }
+
+  private async stopProjectTurns(projectId: string) {
+    const owned = await this.list(undefined, projectId);
+    const activeStatuses = ['analysis_running', 'executing', 'execution_running', 'running', 'waiting_for_user'];
+    const tasks = owned.filter((row) => row.kind === 'task' && activeStatuses.includes(row.data.status));
+    const sessions = owned.filter((row) => row.kind === 'session');
+    const candidates = sessions.filter(
+      (row) =>
+        activeStatuses.includes(row.data.status) ||
+        tasks.some((task) => task.id === row.data.taskId) ||
+        (row.data.turnId && row.data.status !== 'completed'),
+    );
+    if (tasks.some((task) => !sessions.some((session) => session.data.taskId === task.id)))
+      throw new BadRequestException('Cannot delete project: active task has no verifiable session');
+    if (candidates.some((session) => !session.data.threadId || !session.data.turnId))
+      throw new BadRequestException('Cannot delete project: active session has no verifiable turn');
+    if (!candidates.length) return;
+    if (!this.codex) throw new BadRequestException('Cannot delete project: Codex app-server is unavailable');
+    // Stop scheduling dependent work, but retain every record until external termination is confirmed.
+    for (const task of tasks)
+      await this.updateTask(task.id, { status: 'cancelled', cancelledAt: new Date().toISOString() });
+    const verified = new Set<string>();
+    for (const session of candidates) {
+      const key = `${session.data.threadId}:${session.data.turnId}`;
+      if (verified.has(key)) continue;
+      await this.codex.stopTurnAndWait(session.data.threadId, session.data.turnId);
+      verified.add(key);
+    }
+  }
+
+  async saveAnalysis(projectId: string, request: string) {
+    if (!request?.trim()) throw new BadRequestException('The original user request is required');
+    if (this.containsCredential(request)) {
+      throw new BadRequestException('The request appears to contain a credential. Remove secrets and try again.');
+    }
+    const project = await this.get(projectId);
+    if (project.kind !== 'project') throw new BadRequestException('projectId must refer to a project');
+    const agents = await this.list('agent-profile');
+    return this.create(
+      'task',
+      {
+        name: request.slice(0, 240),
+        originalRequest: request,
+        status: 'analysis_pending',
+        approvedPlan: null,
+        draftPlan: null,
+        results: [],
+        sessions: [],
+        profiles: agents.map((a) => a.data.role),
+        createdAt: new Date().toISOString(),
+      },
+      projectId,
+    );
+  }
+
+  async approvePlan(taskId: string, plan: Record<string, any>) {
+    const task = await this.get(taskId);
+    if (task.kind !== 'task') throw new BadRequestException('taskId must refer to a task');
+    if (plan.explicitlyConfirmed !== true)
+      throw new BadRequestException(
+        'The plan can only be approved after explicit user confirmation (explicitlyConfirmed: true)',
+      );
+    for (const step of plan.steps || []) {
+      if (step.releaseOperations !== undefined && !validReleaseOperations(step.releaseOperations))
+        throw new BadRequestException('Invalid releaseOperations scope');
+    }
+    const missingBranches = (Array.isArray(plan.steps) ? plan.steps : [])
+      .map((step: any, index: number) => (!this.isSafeTargetBranch(step?.targetBranch) ? index + 1 : null))
+      .filter((index: number | null): index is number => index !== null);
+    if (missingBranches.length)
+      throw new BadRequestException(
+        `Specify targetBranch explicitly for every plan step before approval (steps: ${missingBranches.join(', ')}); ask the user and wait for the answer, do not choose a branch automatically`,
+      );
+    if (!['analysis_complete', 'plan_draft'].includes(task.data.status))
+      throw new BadRequestException('Analysis must complete before a plan can be approved');
+    task.data = { ...task.data, approvedPlan: plan, status: 'approved', approvedAt: new Date().toISOString() };
+    return this.records.save(task);
+  }
+
+  private isSafeTargetBranch(value: unknown) {
+    return (
+      typeof value === 'string' &&
+      /^[A-Za-z0-9][A-Za-z0-9._/-]{0,119}$/.test(value) &&
+      !value.includes('..') &&
+      !value.includes('//') &&
+      !value.endsWith('/') &&
+      !value.endsWith('.') &&
+      !value.includes('@{')
+    );
+  }
+
+  async saveDraftPlan(taskId: string, plan: Record<string, any>) {
+    const task = await this.get(taskId);
+    if (task.kind !== 'task') throw new BadRequestException('taskId must refer to a task');
+    if (task.data.status !== 'analysis_complete')
+      throw new BadRequestException('Analysis must complete before drafting a plan');
+    task.data = { ...task.data, draftPlan: plan, status: 'plan_draft', draftUpdatedAt: new Date().toISOString() };
+    return this.records.save(task);
+  }
+
+  async updateTask(taskId: string, patch: Record<string, any>) {
+    const task = await this.get(taskId);
+    if (task.kind !== 'task') throw new BadRequestException('taskId must refer to a task');
+    task.data = { ...task.data, ...patch };
+    return this.records.save(task);
+  }
+
+  async getProjectContext(projectId: string) {
+    const project = await this.get(projectId);
+    if (project.kind !== 'project') throw new BadRequestException('projectId must refer to a project');
+    const [instructions, memories, applications, repositories] = await Promise.all([
+      this.list('instruction', projectId),
+      this.list('memory', projectId),
+      this.list('app', projectId),
+      this.list('repository', projectId),
+    ]);
+    return {
+      project,
+      instructions: instructions.filter((x) => x.data.status === 'confirmed'),
+      confirmedMemory: memories.filter((x) => x.data.status === 'confirmed'),
+      applications,
+      repositories,
+    };
+  }
+
+  async seedProfiles(
+    definitions: Array<{ role: string; instructions: string; version: string; defaultModel?: string }>,
+  ) {
+    const existing = await this.list('agent-profile');
+    const legacyRoles: Record<string, string[]> = {
+      'backend-nestjs': ['backend'],
+      'frontend-angular': ['frontend'],
+    };
+    const claimed = new Set<string>();
+    for (const definition of definitions) {
+      const profile = existing.find(
+        (candidate) =>
+          !claimed.has(candidate.id) &&
+          (candidate.data.role === definition.role || legacyRoles[definition.role]?.includes(candidate.data.role)),
+      );
+      const name =
+        definition.role === 'backend-nestjs'
+          ? 'Backend NestJS'
+          : definition.role === 'frontend-angular'
+            ? 'Frontend Angular'
+            : definition.role;
+      const data = {
+        ...profile?.data,
+        name,
+        role: definition.role,
+        instructions: definition.instructions,
+        version: definition.version,
+        defaultModel: profile?.data.defaultModel || definition.defaultModel || null,
+        defaultReasoningEffort: profile?.data.defaultReasoningEffort || 'medium',
+      };
+      if (profile) {
+        claimed.add(profile.id);
+        profile.name = name;
+        profile.projectId = null;
+        profile.data = data;
+        await this.records.save(profile);
+      } else {
+        await this.records.save(
+          this.records.create({ id: randomUUID(), kind: 'agent-profile', projectId: null, name, data }),
+        );
+      }
+    }
+    for (const profile of existing) if (!claimed.has(profile.id)) await this.records.delete(profile.id);
+  }
+
+  private validateKind(kind: string) {
+    const allowed = [
+      'project',
+      'app',
+      'repository',
+      'task',
+      'instruction',
+      'skill',
+      'memory',
+      'backup',
+      'session',
+      'subtask',
+      'agent-message',
+      'agent-event',
+    ];
+    if (!allowed.includes(kind)) throw new BadRequestException(`Unsupported record kind: ${kind}`);
+  }
+
+  private validateRemoteUrl(value: unknown) {
+    if (
+      typeof value !== 'string' ||
+      value.length > 2048 ||
+      !/^(https?:\/\/|ssh:\/\/|git@[\w.-]+:)[^\s]+$/.test(value)
+    ) {
+      throw new BadRequestException('remoteUrl must be an HTTPS, SSH or git@ remote URL');
+    }
+    if (/^https?:\/\/[^/]*@/.test(value))
+      throw new BadRequestException('Remote URLs must not contain embedded credentials');
+  }
+
+  private containsCredential(value: string) {
+    return /(\bsk-[A-Za-z0-9_-]{12,}|\bgh[pousr]_[A-Za-z0-9]{20,}|\bAKIA[A-Z0-9]{16}\b|\b(?:password|passwd|secret|token|api[_-]?key|authorization)\s*[:=]\s*\S+)/i.test(
+      value,
+    );
+  }
+
+  private assertNoSecrets(value: unknown): void {
+    if (!value || typeof value !== 'object') return;
+    for (const [key, child] of Object.entries(value)) {
+      if (/(password|secret|token|api[_-]?key|credential|private[_-]?key)/i.test(key))
+        throw new BadRequestException(`Sensitive field "${key}" cannot be stored in Manager records`);
+      if (typeof child === 'string' && this.containsCredential(child))
+        throw new BadRequestException('A value resembling a credential cannot be stored in Manager records');
+      if (child && typeof child === 'object') this.assertNoSecrets(child);
+    }
+  }
+
+  private async validateLocalPath(path: unknown, projectId?: string) {
+    if (typeof path !== 'string' || !isAbsolute(path))
+      throw new BadRequestException('Local path must be an absolute path');
+    const actualPath = await this.resolveHostPath(path);
+    if (projectId) {
+      const project = await this.get(projectId);
+      const root = project.data.path;
+      if (typeof root !== 'string' || !isAbsolute(root))
+        throw new BadRequestException('Register an absolute project path before adding applications');
+      const actualRoot = await this.resolveHostPath(root);
+      const rel = relative(resolve(actualRoot), resolve(actualPath));
+      if (rel.startsWith('..') || isAbsolute(rel))
+        throw new BadRequestException('Application path must stay inside the registered project directory');
+    }
+  }
+
+  private async resolveHostPath(path: string) {
+    try {
+      return this.codex ? await this.codex.resolveHostPath(path) : resolve(path);
+    } catch (error) {
+      throw new BadRequestException(
+        `Local path must exist and be accessible on the Mac host through Codex app-server: ${error instanceof Error ? error.message : 'path check failed'}`,
+      );
+    }
+  }
+}

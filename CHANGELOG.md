@@ -8,7 +8,7 @@ Each entry is tagged with the branch it was made on.
 ## [delivery-workflow] — 2026-07-08
 
 ### Added
-- `qa-runner` agent — boots the app against a real Docker-based Postgres/Redis/MinIO stack (`docker-compose.test.yml`) to catch runtime issues static review can't, before a change ships
+- `qa-runner` agent — boots the app against a real Docker-based Postgres/Redis stack (`docker-compose.test.yml`) to catch runtime issues static review can't, before a change ships
 - `coder` agent — merges the former `backend-architect`, `api-contracts`, and `migrations` agents into one full-stack implementation role covering modules, entities, API contracts, and migrations
 - Four hooks in `.claude/settings.json`: auto-lint on save, a confirmation guard before hand-editing generated migration files, a hard block on `git push --force`/`git commit --amend`, and a build+test verification gate before every push
 - A permission allowlist for recurring read-only/build commands (`npm test`, `npm run build`, `npx jest`, `npx tsc`) to cut down on approval prompts
@@ -100,7 +100,7 @@ Each entry is tagged with the branch it was made on.
 ## [main] — 2026-04-13
 
 ### Added
-- Production-ready NestJS 11 template with pre-wired infrastructure: PostgreSQL/TypeORM, Redis (ioredis), S3-compatible storage (AWS SDK v3), configurable HTTP client with retry/backoff, global exception filter, API key guard, and Swagger UI
+- Production-ready NestJS 11 template with pre-wired infrastructure: PostgreSQL/TypeORM, Redis (ioredis), configurable HTTP client with retry/backoff, global exception filter, API key guard, and Swagger UI
 - `health` domain module — `GET /health` returning app name, environment, and uptime
 - Docker Secrets loader — reads `/run/secrets/` and injects values as environment variables
 
@@ -108,3 +108,8 @@ Each entry is tagged with the branch it was made on.
 - Error responses now include a machine-readable `errorCode` field
 - Exception filter falls back to a string error code derived from the HTTP status when no explicit code is provided
 - Production data source configured separately from the dev data source
+## [static-dashboard] — 2026-11-13
+
+### Updated
+- Added the AgentPier SVG favicon, read-only project instruction viewer, and stacked recent-work status badges for desktop and narrow layouts.
+- Display agent default models from the dashboard's `defaultModel` field.
