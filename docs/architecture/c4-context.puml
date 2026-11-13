@@ -1,0 +1,34 @@
+@startuml AgentPier-C4-Context
+!include <C4/C4_Context>
+LAYOUT_WITH_LEGEND()
+
+Person(user, "Developer", "Uses an MCP client, reviews dashboard state, and reviews local changes")
+
+System_Boundary(host, "Host") {
+  System_Ext(codexUi, "Codex desktop chat UI", "User-facing chat and MCP client used to plan and manage AgentPier work")
+  System_Ext(appserver, "Codex app-server", "Runs fresh read-only analysis and approved implementation threads")
+  System_Ext(agentSessions, "Managed agents", "Fresh Codex threads configured with each agent's profile, model, and project context")
+  System_Ext(checkout, "Project checkout", "Local project files and selected working branch")
+}
+
+System_Boundary(compose, "Docker Compose") {
+  System_Ext(dashboard, "Frontend dashboard", "Read-only display of Manager status and history")
+  System(agentpier, "AgentPier Manager", "MCP endpoint and orchestrator for profile-specific agents and project records")
+  System_Ext(mysql, "MySQL", "Persistent application records")
+}
+
+System_Ext(github, "GitHub", "External remote where agents can publish code when explicitly authorized")
+System_Ext(storage, "S3-compatible storage", "Stores scheduled and requested backups")
+
+Rel(user, codexUi, "Discusses tasks and reviews plans/results")
+Rel(codexUi, agentpier, "Calls MCP tools", "Streamable HTTP :3100/mcp")
+Rel(user, dashboard, "Views status/history", "HTTP :3101; read-only")
+Rel(dashboard, agentpier, "Reads dashboard data", "HTTP GET")
+Rel(agentpier, appserver, "Starts/observes agent threads with profile/model/context", "WebSocket JSON-RPC")
+Rel(appserver, agentSessions, "Creates fresh analysis/execution threads")
+Rel(agentSessions, checkout, "Reads/writes approved task changes within sandbox")
+Rel(agentSessions, github, "Publishes code when explicitly authorized")
+Rel(agentpier, mysql, "Persists records", "TypeORM")
+Rel(agentpier, storage, "Uploads/verifies backups", "S3 API")
+SHOW_LEGEND()
+@enduml

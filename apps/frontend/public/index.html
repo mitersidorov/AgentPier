@@ -1,0 +1,928 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#0d1117" />
+    <link rel="icon" type="image/svg+xml" href="/AgentPier-refined-dark.svg" />
+    <title>AgentPier · Local agent manager</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font:
+          15px/1.55 Inter,
+          ui-sans-serif,
+          system-ui,
+          -apple-system,
+          BlinkMacSystemFont,
+          'Segoe UI',
+          sans-serif;
+        color: #f3f7f5;
+        background: #0d1117;
+        --surface: #141b23;
+        --surface-raised: #1f2937;
+        --border: #2b3744;
+        --muted: #a0ada8;
+        --green: #34d399;
+        --green-soft: #6ee7b7;
+        --green-pale: #a7f3d0;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        min-width: 320px;
+      }
+      a {
+        color: var(--green-soft);
+      }
+      header {
+        border-bottom: 1px solid var(--border);
+        background: #10161d;
+      }
+      .header-inner,
+      main,
+      footer {
+        width: min(1120px, calc(100% - 40px));
+        margin: 0 auto;
+      }
+      .header-inner {
+        min-height: 84px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 15px;
+      }
+      .logo {
+        width: 48px;
+        height: 48px;
+        border-radius: 12px;
+      }
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 13px;
+        margin-right: auto;
+      }
+      h1 {
+        margin: 0;
+        font-size: 21px;
+        letter-spacing: -0.025em;
+      }
+      .subtitle,
+      .muted {
+        color: var(--muted);
+      }
+      .subtitle {
+        font-size: 13px;
+        margin-top: 1px;
+      }
+      main {
+        padding: 28px 0 52px;
+      }
+      .section {
+        margin-bottom: 23px;
+      }
+      .section-heading {
+        display: flex;
+        justify-content: space-between;
+        align-items: end;
+        gap: 16px;
+        margin-bottom: 12px;
+      }
+      h2 {
+        margin: 0;
+        font-size: 18px;
+        letter-spacing: -0.015em;
+      }
+      h3 {
+        margin: 0 0 7px;
+        font-size: 15px;
+      }
+      p {
+        margin: 6px 0;
+      }
+      .muted {
+        font-size: 13px;
+      }
+      .panel {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 15px;
+        padding: 19px;
+      }
+      .health-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 10px;
+        margin-top: 16px;
+      }
+      .health-item {
+        background: #10161d;
+        border: 1px solid var(--border);
+        border-radius: 11px;
+        padding: 12px 13px;
+        min-width: 0;
+      }
+      .health-item strong {
+        display: block;
+        font-size: 13px;
+        margin-bottom: 5px;
+      }
+      .health-value {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        flex: 0 0 auto;
+        background: #6b7280;
+      }
+      .dot.ok {
+        background: var(--green);
+        box-shadow: 0 0 10px #34d39955;
+      }
+      .dot.bad {
+        background: #fb7185;
+      }
+      .health-detail {
+        color: #87958f;
+        font-size: 11px;
+        margin-top: 5px;
+        overflow-wrap: anywhere;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: 14px;
+      }
+      .project-list {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+        gap: 12px;
+      }
+      .item {
+        border-top: 1px solid var(--border);
+        padding: 11px 0 1px;
+      }
+      .item:first-child {
+        border-top: 0;
+        padding-top: 0;
+      }
+      .item-title {
+        font-weight: 650;
+      }
+      .path {
+        color: #9eaba5;
+        font:
+          12px/1.5 ui-monospace,
+          SFMono-Regular,
+          Menlo,
+          monospace;
+        overflow-wrap: anywhere;
+      }
+      .pill {
+        display: inline-flex;
+        align-items: center;
+        border-radius: 999px;
+        background: #17392f;
+        color: var(--green-pale);
+        padding: 2px 9px;
+        font-size: 11px;
+        font-weight: 650;
+      }
+      .pill.dim {
+        background: var(--surface-raised);
+        color: #bec8c4;
+      }
+      .agent-grid {
+        display: flex;
+        align-items: stretch;
+        gap: 12px;
+        overflow-x: auto;
+        padding: 2px 1px 10px;
+        scrollbar-color: #40554c #10161d;
+      }
+      .agent-card {
+        flex: 0 0 290px;
+        width: 290px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        text-align: left;
+        color: #f3f7f5;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        padding: 15px;
+      }
+      .agent-card:hover {
+        color: #fff;
+        background: #19251f;
+        border-color: var(--green);
+      }
+      .agent-role {
+        color: var(--green-soft);
+        font-size: 12px;
+        margin-top: 2px;
+      }
+      button {
+        flex: 0 0 auto;
+        cursor: pointer;
+        font: inherit;
+        font-size: 13px;
+        font-weight: 650;
+        color: #07130f;
+        background: var(--green);
+        border: 0;
+        border-radius: 9px;
+        padding: 8px 12px;
+      }
+      button:hover {
+        background: var(--green-soft);
+      }
+      .project-card {
+        width: 100%;
+        display: block;
+        text-align: left;
+        color: #f3f7f5;
+        background: #10161d;
+        border: 1px solid var(--border);
+        padding: 15px;
+      }
+      .project-card:hover {
+        color: #fff;
+        background: #18231f;
+        border-color: var(--green);
+      }
+      .project-path {
+        margin-top: 5px;
+      }
+      .project-meta {
+        display: flex;
+        gap: 7px;
+        flex-wrap: wrap;
+        margin-top: 11px;
+      }
+      .detail-group {
+        margin-top: 20px;
+      }
+      .detail-app {
+        margin: 10px 0;
+        padding: 13px;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: #10161d;
+      }
+      .repo-link {
+        color: var(--green-soft);
+        overflow-wrap: anywhere;
+      }
+      .task-card {
+        padding: 12px 0;
+        border-top: 1px solid var(--border);
+      }
+      .task-card:first-child {
+        border-top: 0;
+      }
+      .task-summary {
+        cursor: pointer;
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        align-items: center;
+        gap: 7px 12px;
+        padding: 3px 0;
+        list-style: none;
+      }
+      .task-summary::-webkit-details-marker {
+        display: none;
+      }
+      .task-statuses {
+        grid-column: 1 / -1;
+        grid-row: 1;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 5px;
+      }
+      .task-summary strong {
+        grid-column: 1;
+        grid-row: 2;
+        min-width: 0;
+        overflow-wrap: anywhere;
+      }
+      .task-summary::after {
+        grid-column: 2;
+        grid-row: 2;
+        content: '+';
+        color: var(--green-soft);
+        font-size: 20px;
+        line-height: 1;
+      }
+      details[open] > .task-summary::after {
+        content: '−';
+      }
+      .task-full-request {
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        color: #bdc9c3;
+        font-size: 13px;
+        margin: 10px 0;
+      }
+      .modal-actions {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .copy-status {
+        font-size: 12px;
+        color: var(--green-soft);
+      }
+      .empty {
+        padding: 13px;
+        color: var(--muted);
+        background: #10161d;
+        border: 1px dashed #344239;
+        border-radius: 10px;
+        font-size: 13px;
+      }
+      .task-meta {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+        margin: 5px 0;
+      }
+      .task-detail {
+        color: #bdc9c3;
+        font-size: 13px;
+        overflow-wrap: anywhere;
+      }
+      code,
+      pre {
+        font:
+          12px/1.55 ui-monospace,
+          SFMono-Regular,
+          Menlo,
+          monospace;
+      }
+      code {
+        color: var(--green-pale);
+        background: #0d1117;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 4px 7px;
+        overflow-wrap: anywhere;
+      }
+      dialog {
+        color: #f3f7f5;
+        background: var(--surface);
+        border: 1px solid #3a4a57;
+        border-radius: 16px;
+        padding: 0;
+        width: min(720px, calc(100% - 28px));
+        max-height: min(82vh, 850px);
+        box-shadow: 0 28px 100px #000b;
+      }
+      dialog::backdrop {
+        background: #05080dcc;
+        backdrop-filter: blur(3px);
+      }
+      .modal-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: start;
+        gap: 12px;
+        padding: 18px 20px;
+        border-bottom: 1px solid var(--border);
+        position: sticky;
+        top: 0;
+        background: var(--surface);
+      }
+      .modal-body {
+        padding: 18px 20px 22px;
+        overflow: auto;
+      }
+      .modal-close {
+        color: #e9f2ed;
+        background: var(--surface-raised);
+        padding: 6px 10px;
+      }
+      .instruction {
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        color: #d0dbd5;
+        font:
+          13px/1.6 ui-monospace,
+          SFMono-Regular,
+          Menlo,
+          monospace;
+        background: #10161d;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 14px;
+      }
+      .skill-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        border-top: 1px solid var(--border);
+        padding: 10px 0;
+      }
+      .skill-row:first-child {
+        border-top: 0;
+      }
+      .setup-steps {
+        padding-left: 20px;
+      }
+      .setup-steps li {
+        margin: 9px 0;
+      }
+      .setup-note {
+        border-left: 3px solid var(--green);
+        padding: 10px 13px;
+        background: #10231c;
+        border-radius: 0 9px 9px 0;
+        margin: 14px 0;
+      }
+      footer {
+        border-top: 1px solid var(--border);
+        padding: 18px 0 28px;
+        color: var(--muted);
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        flex-wrap: wrap;
+        font-size: 13px;
+      }
+      .footer-links {
+        display: flex;
+        gap: 16px;
+        flex-wrap: wrap;
+      }
+      @media (max-width: 760px) {
+        .health-grid {
+          grid-template-columns: 1fr 1fr;
+        }
+      }
+      @media (max-width: 520px) {
+        .header-inner,
+        main,
+        footer {
+          width: min(100% - 28px, 1120px);
+        }
+        .header-inner {
+          min-height: 72px;
+        }
+        .logo {
+          width: 42px;
+          height: 42px;
+        }
+        .health-grid {
+          grid-template-columns: 1fr;
+        }
+        .panel {
+          padding: 15px;
+        }
+        .section-heading {
+          align-items: start;
+          flex-direction: column;
+        }
+        .agent-card {
+          flex-basis: 260px;
+          width: 260px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <div class="header-inner">
+        <div class="brand">
+          <img class="logo" src="/AgentPier-refined-dark.svg" alt="AgentPier logo" />
+          <div class="brand-copy">
+            <h1>AgentPier</h1>
+            <div class="subtitle">Local workspace for Codex agents</div>
+          </div>
+        </div>
+        <button id="open-setup" type="button">ChatGPT setup &amp; guide</button>
+      </div>
+    </header>
+    <main>
+      <section class="section panel" aria-labelledby="system-heading">
+        <div class="section-heading">
+          <div>
+            <h2 id="system-heading">System status</h2>
+            <div class="muted">Manager, storage and agent connections</div>
+          </div>
+          <span id="last-checked" class="muted">Checking…</span>
+        </div>
+        <div id="health-grid" class="health-grid">
+          <div class="empty">Checking Manager, MySQL, MCP and Codex app-server…</div>
+        </div>
+      </section>
+
+      <div class="grid">
+        <section class="section panel" aria-labelledby="projects-heading">
+          <div class="section-heading">
+            <h2 id="projects-heading">Projects</h2>
+            <span id="project-count" class="pill dim">—</span>
+          </div>
+          <div id="projects" class="project-list"><div class="empty">Loading projects…</div></div>
+        </section>
+      </div>
+
+      <section class="section panel" aria-labelledby="agents-heading">
+        <div class="section-heading">
+          <div>
+            <h2 id="agents-heading">Agents</h2>
+          </div>
+          <span id="agent-count" class="pill dim">—</span>
+        </div>
+        <div id="agents" class="agent-grid"><div class="empty">Loading agent profiles…</div></div>
+      </section>
+    </main>
+
+    <footer>
+      <span>Created by <strong id="developer-name">Dimi Sidorov</strong></span
+      ><span class="footer-links"
+        ><a href="https://github.com/mitersidorov" target="_blank" rel="noopener noreferrer">GitHub profile</a
+        ><a href="https://github.com/mitersidorov/AgentPier" target="_blank" rel="noopener noreferrer"
+          >AgentPier repository</a
+        ></span
+      >
+    </footer>
+
+    <dialog id="agent-modal" aria-labelledby="agent-modal-title">
+      <div class="modal-header">
+        <div>
+          <h2 id="agent-modal-title">Agent</h2>
+          <div id="agent-modal-version" class="muted"></div>
+          <div id="agent-default-model" class="muted"></div>
+        </div>
+        <button class="modal-close" data-close="agent-modal" aria-label="Close">Close</button>
+      </div>
+      <div class="modal-body">
+        <h3>Instructions</h3>
+        <pre id="agent-instructions" class="instruction"></pre>
+        <h3 style="margin-top: 22px">Skills</h3>
+        <div id="agent-skills"></div>
+      </div>
+    </dialog>
+    <dialog id="skill-modal" aria-labelledby="skill-modal-title">
+      <div class="modal-header">
+        <div><h2 id="skill-modal-title">Skill</h2></div>
+        <button class="modal-close" data-close="skill-modal" aria-label="Close">Close</button>
+      </div>
+      <div class="modal-body"><pre id="skill-content" class="instruction"></pre></div>
+    </dialog>
+    <dialog id="project-modal" aria-labelledby="project-modal-title">
+      <div class="modal-header">
+        <div>
+          <h2 id="project-modal-title">Project</h2>
+          <div id="project-modal-path" class="path"></div>
+        </div>
+        <button class="modal-close" data-close="project-modal" aria-label="Close">Close</button>
+      </div>
+      <div id="project-modal-content" class="modal-body"></div>
+    </dialog>
+    <dialog id="project-instruction-modal" aria-labelledby="project-instruction-title">
+      <div class="modal-header"><div><h2 id="project-instruction-title">Project instruction</h2><div id="project-instruction-source" class="muted"></div></div><button class="modal-close" data-close="project-instruction-modal" aria-label="Close">Close</button></div>
+      <div class="modal-body"><pre id="project-instruction-content" class="instruction"></pre></div>
+    </dialog>
+    <dialog id="setup-modal" aria-labelledby="setup-modal-title">
+      <div class="modal-header">
+        <div>
+          <h2 id="setup-modal-title">Connect ChatGPT to AgentPier</h2>
+          <div class="muted">Setup and first steps</div>
+        </div>
+        <div class="modal-actions">
+          <span id="copy-status" class="copy-status" role="status" aria-live="polite"></span
+          ><button id="copy-setup" type="button">Copy setup</button
+          ><button class="modal-close" data-close="setup-modal" aria-label="Close">Close</button>
+        </div>
+      </div>
+      <div class="modal-body">
+        <div class="setup-note">
+          <strong>Important:</strong> ChatGPT cannot connect directly to <code>localhost:3100</code>. AgentPier
+          currently runs locally and no Secure MCP Tunnel is configured.
+        </div>
+        <h3>Connect in ChatGPT</h3>
+        <ol class="setup-steps">
+          <li>Start AgentPier on this Mac with <code>docker compose up -d</code>.</li>
+          <li>
+            Make AgentPier reachable through an available Secure MCP Tunnel. The tunnel must point to
+            <code>http://localhost:3100/mcp</code>. Do not expose the local service publicly without a protected
+            connection.
+          </li>
+          <li>
+            Configure the tunnel in a client/workspace that supports remote MCP. Follow that client's current setup
+            instructions; AgentPier does not control or verify the client's GUI.
+          </li>
+          <li>After connecting, call AgentPier MCP tools from the client to list or register a project.</li>
+        </ol>
+        <p class="muted">
+          Full write-capable custom MCP access depends on your ChatGPT plan and workspace permissions. OpenAI currently
+          documents full MCP for Business and Enterprise/Edu; Pro supports read/fetch access. See the
+          <a
+            href="https://help.openai.com/en/articles/12584461-connecting-custom-mcp-servers-in-chatgpt"
+            target="_blank"
+            rel="noopener noreferrer"
+            >official OpenAI setup guide</a
+          >.
+        </p>
+        <h3 class="detail-group">Use the project workflow</h3>
+        <ol class="setup-steps">
+          <li>
+            Register a project with its Mac folder using <code>register_project</code>; add applications and
+            repositories with <code>manage_applications</code>.
+          </li>
+          <li>
+            Start read-only discovery with <code>analyze_task</code>; review the saved findings using
+            <code>get_analysis_results</code>.
+          </li>
+          <li>
+            Discuss a draft with the user. Save it with <code>save_plan</code> and call <code>approve_plan</code> only
+            after explicit user approval.
+          </li>
+          <li>
+            Run <code>execute_task</code>. Follow progress and agent questions with <code>get_task_status</code> and
+            <code>get_agent_messages</code>; respond with <code>send_agent_message</code>.
+          </li>
+          <li>
+            Show the finished changes with <code>get_task_results</code>. Push or publish only after a separate user
+            decision.
+          </li>
+        </ol>
+        <h3 class="detail-group">Connect local Codex CLI</h3>
+        <p class="muted">For local MCP access without ChatGPT, run this on the Mac:</p>
+        <p><code>codex mcp add agentpier --url http://localhost:3100/mcp</code></p>
+        <p class="muted">
+          ChatGPT MCP uses Streamable HTTP. The Manager connects to Codex app-server separately over WebSocket.
+        </p>
+      </div>
+    </dialog>
+
+    <script src="/dashboard-relations.js"></script>
+    <script src="/dashboard-load-state.js"></script>
+    <script>
+      let dashboard = { projects: [], apps: [], repos: [], tasks: [], sessions: [], subtasks: [], agents: [], instructions: [] };
+      let dashboardLoadState = DashboardLoadState.createDashboardLoadState();
+      const api = async (path) => {
+        const response = await fetch(path, { headers: { accept: 'application/json' } });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.message || response.statusText);
+        return data;
+      };
+      const esc = (value) =>
+        String(value ?? '').replace(
+          /[&<>"']/g,
+          (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char],
+        );
+      const titleCase = (value) =>
+        String(value || '')
+          .replace(/[-_]/g, ' ')
+          .replace(/\b\w/g, (char) => char.toUpperCase());
+      const canonicalProfile = (role) => ({ backend: 'backend-nestjs', frontend: 'frontend-angular' })[role] || role;
+      const showHealth = (title, ok, value, detail = '') =>
+        `<div class="health-item"><strong>${esc(title)}</strong><div class="health-value"><span class="dot ${ok ? 'ok' : 'bad'}"></span>${esc(value)}</div>${detail ? `<div class="health-detail">${esc(detail)}</div>` : ''}</div>`;
+      const displayName = (record) => record.name || record.data?.name || 'Unnamed';
+      const taskStatus = (status) => esc(titleCase(status));
+      const shortPrompt = (prompt) => {
+        const compact = String(prompt || '')
+          .replace(/\s+/g, ' ')
+          .trim();
+        return compact.length > 68 ? `${compact.slice(0, 65).trimEnd()}…` : compact || 'Untitled task';
+      };
+
+      async function refresh() {
+        const health = document.getElementById('health-grid');
+        try {
+          const [status, projects, agents, tasks, apps, repos, sessions, subtasks, instructions] = await Promise.all([
+            api('/dashboard/status'),
+            api('/dashboard/records?kind=project'),
+            api('/dashboard/agents'),
+            api('/dashboard/records?kind=task'),
+            api('/dashboard/records?kind=app'),
+            api('/dashboard/records?kind=repository'),
+            api('/dashboard/records?kind=session'),
+            api('/dashboard/records?kind=subtask'),
+            api('/dashboard/records?kind=instruction'),
+          ]);
+          dashboard = { projects, agents, tasks, apps, repos, sessions, subtasks, instructions };
+          dashboardLoadState = DashboardLoadState.markDashboardLoadSuccess(dashboardLoadState);
+          const ws = status.appServer;
+          health.innerHTML = [
+            showHealth(
+              'MySQL database',
+              status.database.connected,
+              status.database.connected ? 'Connected' : 'Unavailable',
+              status.database.reason || '',
+            ),
+            showHealth(
+              'AgentPier MCP',
+              status.mcp.ready,
+              status.mcp.ready ? 'Ready' : 'Unavailable',
+              status.mcp.ready ? `${status.mcp.transport} · ${status.mcp.path}` : status.mcp.reason || 'MCP route unavailable',
+            ),
+            showHealth(
+              'Backup storage',
+              status.backupStorage.connected,
+              status.backupStorage.connected ? 'Connected' : 'Unavailable',
+              status.backupStorage.reason || `Bucket: ${status.backupStorage.bucket}`,
+            ),
+            showHealth(
+              'Codex app-server',
+              ws.connected,
+              ws.connected ? 'WebSocket connected' : 'WebSocket unavailable',
+              `Ready: ${ws.ready ? 'yes' : 'no'} · Health: ${ws.health ? 'yes' : 'no'}${ws.reason ? ` · ${ws.reason}` : ''}`,
+            ),
+          ].join('');
+          document.getElementById('last-checked').textContent = `Updated ${new Date().toLocaleTimeString()}`;
+          renderProjects();
+          renderAgents();
+        } catch (error) {
+          dashboardLoadState = DashboardLoadState.markDashboardLoadFailure(dashboardLoadState);
+          const failureView = DashboardLoadState.getDashboardFailurePresentation(
+            dashboardLoadState,
+            dashboard.projects.length,
+            dashboard.agents.length,
+          );
+          health.innerHTML = showHealth('Manager', false, 'Unavailable', error.message);
+          document.getElementById('last-checked').textContent = 'Unable to refresh dashboard';
+          if (failureView.phase === 'unavailable') {
+            document.getElementById('project-count').textContent = failureView.projectCount;
+            document.getElementById('agent-count').textContent = failureView.agentCount;
+            document.getElementById('projects').innerHTML = '<div class="empty">Projects unavailable. <button type="button" data-dashboard-retry>Retry</button></div>';
+            document.getElementById('agents').innerHTML = '<div class="empty">Agent profiles unavailable. <button type="button" data-dashboard-retry>Retry</button></div>';
+            document.querySelectorAll('[data-dashboard-retry]').forEach((button) => button.addEventListener('click', refresh));
+          } else {
+            document.getElementById('project-count').textContent = failureView.projectCount;
+            document.getElementById('agent-count').textContent = failureView.agentCount;
+          }
+        }
+      }
+
+      function renderProjects() {
+        const projects = dashboard.projects;
+        document.getElementById('project-count').textContent = projects.length;
+        document.getElementById('projects').innerHTML = projects.length
+          ? projects
+              .map((project, index) => {
+                const appCount = dashboard.apps.filter((item) => item.projectId === project.id).length;
+                const repoCount = dashboard.repos.filter((item) => item.projectId === project.id).length;
+                const taskCount = dashboard.tasks.filter((item) => item.projectId === project.id).length;
+                return `<button type="button" class="project-card" data-project="${index}"><span class="item-title">${esc(displayName(project))}</span><div class="path project-path">${esc(project.data.path || 'Project root is not set')}</div><span class="project-meta"><span class="pill dim">${appCount} apps</span><span class="pill dim">${repoCount} repos</span><span class="pill dim">${taskCount} tasks</span></span></button>`;
+              })
+              .join('')
+          : '<div class="empty">No projects registered. Add a project through MCP using <code>register_project</code>.</div>';
+        document
+          .querySelectorAll('[data-project]')
+          .forEach((button) =>
+            button.addEventListener('click', () => openProject(projects[Number(button.dataset.project)])),
+          );
+      }
+
+      function renderAgents() {
+        const agents = dashboard.agents;
+        document.getElementById('agent-count').textContent = agents.length;
+        document.getElementById('agents').innerHTML = agents.length
+          ? agents
+              .map((agent, index) => {
+                const activeSessions = dashboard.sessions.filter(
+                  (session) =>
+                    canonicalProfile(session.data.profile) === agent.role &&
+                    ['running', 'starting'].includes(session.data.status),
+                ).length;
+                return `<button type="button" class="agent-card" data-agent="${index}"><span><span class="item-title">${esc(agent.name || titleCase(agent.role))}</span><span class="agent-role" style="display:block">Stack profile · ${agent.skills.length} skills</span><span class="agent-role" style="display:block">Default model · ${esc(agent.defaultModel || 'not configured')}</span><span class="agent-role" style="display:block">Reasoning effort · ${esc(agent.defaultReasoningEffort || 'medium')}</span></span><span class="pill ${activeSessions ? '' : 'dim'}">${activeSessions} active</span></button>`;
+              })
+              .join('')
+          : '<div class="empty">No agent profiles are available.</div>';
+        document
+          .querySelectorAll('[data-agent]')
+          .forEach((button) => button.addEventListener('click', () => openAgent(agents[Number(button.dataset.agent)])));
+      }
+
+      function repoMarkup(repo) {
+        const remote = repo.data.remoteUrl;
+        const href = typeof remote === 'string' && /^https?:\/\//i.test(remote) ? remote : null;
+        return `<div class="muted">Git repository: <strong>${esc(displayName(repo))}</strong></div><div class="path">Local folder: ${esc(repo.data.path || 'not set')}</div><div class="muted">Remote: ${href ? `<a class="repo-link" href="${esc(href)}" target="_blank" rel="noopener noreferrer">${esc(remote)}</a>` : `<code>${esc(remote || 'not set')}</code>`}</div>`;
+      }
+
+      function openProject(project) {
+        document.getElementById('project-modal-title').textContent = displayName(project);
+        document.getElementById('project-modal-path').textContent = `Project folder: ${project.data.path || 'not set'}`;
+        const apps = dashboard.apps.filter((item) => item.projectId === project.id);
+        const repos = dashboard.repos.filter((item) => item.projectId === project.id);
+        const tasks = dashboard.tasks
+          .filter((item) => item.projectId === project.id)
+          .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+        const linkedRepoIds = new Set();
+        const appMarkup = apps.length
+          ? apps
+              .map((app) => {
+                const linked = window.AgentPierDashboard.linkedRepositories(app, repos);
+                linked.forEach((repo) => linkedRepoIds.add(repo.id));
+                return `<article class="detail-app"><h3>${esc(displayName(app))}</h3>${app.data.purpose ? `<p class="muted">${esc(app.data.purpose)}</p>` : ''}<div class="path">Application folder: ${esc(app.data.path || 'not set')}</div>${linked.length ? `<div class="detail-group">${linked.map(repoMarkup).join('<hr style="border-color:var(--border);border-style:solid none none;margin:11px 0">')}</div>` : '<p class="muted">No Git repository linked to this application yet.</p>'}</article>`;
+              })
+              .join('')
+          : '<div class="empty">No applications registered for this project.</div>';
+        const unlinkedRepos = repos.filter((repo) => !linkedRepoIds.has(repo.id));
+        const taskMarkup = tasks.length
+          ? tasks
+              .map((task) => {
+                const sessions = dashboard.sessions.filter((item) => item.data.taskId === task.id);
+                const subtasks = dashboard.subtasks.filter((item) => item.data.taskId === task.id);
+                const summaries = (task.data.results || [])
+                  .map((result) => result.summary || result.result || '')
+                  .filter(Boolean);
+                const badges = [`<span class="pill">${taskStatus(task.data.status)}</span>`, ...sessions.map((session) => `<span class="pill dim">${esc(titleCase(session.data.profile))}: ${taskStatus(session.data.status)}</span>`), ...subtasks.map((subtask) => `<span class="pill dim">${esc(titleCase(subtask.data.title || 'Subtask'))}: ${taskStatus(subtask.data.status)}</span>`)];
+                return `<details class="task-card"><summary class="task-summary"><span class="task-statuses">${badges.join('')}</span><strong>${esc(shortPrompt(task.data.originalRequest || displayName(task)))}</strong></summary><div><p class="task-full-request">${esc(task.data.originalRequest || '')}</p>${sessions.map((session) => `<div class="muted">${esc(titleCase(session.data.profile))} · ${esc(titleCase(session.data.status))} · thread <code>${esc(session.data.threadId || session.data.codexSessionId || 'pending')}</code></div>`).join('')}${subtasks.map((subtask) => `<div class="muted">${esc(subtask.data.title)} · ${taskStatus(subtask.data.status)}${subtask.data.branch ? ` · ${esc(subtask.data.branch)}` : ''}</div>`).join('')}${summaries.map((summary) => `<div class="task-detail">${esc(summary)}</div>`).join('')}${task.data.error ? `<div class="health-detail">${esc(task.data.error)}</div>` : ''}</div></details>`;
+              })
+              .join('')
+          : '<div class="empty">No task history for this project yet.</div>';
+        const instructions = window.AgentPierDashboard.confirmedInstructions(project, dashboard.instructions);
+        document.getElementById('project-modal-content').innerHTML =
+          `<section class="detail-group"><h3>Applications</h3>${appMarkup}</section>${unlinkedRepos.length ? `<section class="detail-group"><h3>Project repositories</h3>${unlinkedRepos.map((repo) => `<article class="detail-app">${repoMarkup(repo)}</article>`).join('')}</section>` : ''}<section class="detail-group"><h3>Confirmed project instructions</h3>${instructions.length ? instructions.map((instruction, index) => `<button type="button" data-project-instruction="${index}">${esc(instruction.data.title || instruction.data.name || `View instruction ${index + 1}`)}</button>`).join(' ') : '<p class="muted">No confirmed project instructions are registered.</p>'}</section><section class="detail-group"><h3>Recent work (${tasks.length})</h3>${taskMarkup}</section>`;
+        document.querySelectorAll('[data-project-instruction]').forEach((button) => {
+          button.addEventListener('click', () => {
+            const instruction = instructions[Number(button.dataset.projectInstruction)];
+            if (!instruction) return;
+            document.getElementById('project-instruction-title').textContent = instruction.data.title || instruction.data.name || displayName(project);
+            document.getElementById('project-instruction-source').textContent = `Read-only project instruction · ${instruction.data.source || 'recorded context'}`;
+            window.AgentPierDashboard.setInstructionText(document.getElementById('project-instruction-content'), instruction);
+            document.getElementById('project-instruction-modal').showModal();
+          });
+        });
+        document.getElementById('project-modal').showModal();
+      }
+
+      function skillName(skill) {
+        return skill.path.split('/').slice(-2, -1)[0] || skill.path.split('/').pop();
+      }
+      function openAgent(agent) {
+        document.getElementById('agent-modal-title').textContent = agent.name || titleCase(agent.role);
+        document.getElementById('agent-modal-version').textContent = `Instruction version ${agent.version}`;
+        document.getElementById('agent-default-model').textContent = `Default model: ${agent.defaultModel || 'not configured'} · Reasoning effort: ${agent.defaultReasoningEffort || 'medium'}`;
+        document.getElementById('agent-instructions').textContent = agent.profile;
+        document.getElementById('agent-skills').innerHTML = agent.skills.length
+          ? agent.skills
+              .map(
+                (skill, index) =>
+                  `<div class="skill-row"><div><div class="item-title">${esc(skillName(skill))}</div><div class="muted">${esc(skill.path)}</div></div><button type="button" data-skill="${index}">View</button></div>`,
+              )
+              .join('')
+          : '<div class="empty">No skills are assigned to this profile.</div>';
+        document.querySelectorAll('[data-skill]').forEach((button) =>
+          button.addEventListener('click', () => {
+            const skill = agent.skills[Number(button.dataset.skill)];
+            document.getElementById('skill-modal-title').textContent = skillName(skill);
+            document.getElementById('skill-content').textContent = skill.content;
+            document.getElementById('skill-modal').showModal();
+          }),
+        );
+        document.getElementById('agent-modal').showModal();
+      }
+
+      document
+        .getElementById('open-setup')
+        .addEventListener('click', () => document.getElementById('setup-modal').showModal());
+      document.getElementById('copy-setup').addEventListener('click', async () => {
+        const copyStatus = document.getElementById('copy-status');
+        const instructions = [
+          'AgentPier MCP setup for ChatGPT',
+          'Local MCP URL: http://localhost:3100/mcp',
+          'Dashboard URL: http://localhost:3101 (display and read-only status only). ChatGPT and Codex connect directly to Manager MCP, not through the dashboard.',
+          'ChatGPT cannot connect directly to localhost. First configure an available Secure MCP Tunnel forwarding to http://localhost:3100/mcp (the Manager port, not the dashboard).',
+          'Use a client/workspace that supports remote MCP and follow its current setup instructions. AgentPier does not control or verify the client GUI.',
+          'No tunnel is currently configured for AgentPier.',
+          'Guide: https://help.openai.com/en/articles/12584461-connecting-custom-mcp-servers-in-chatgpt',
+        ].join('\n');
+        try {
+          await navigator.clipboard.writeText(instructions);
+          copyStatus.textContent = 'Setup copied';
+        } catch {
+          copyStatus.textContent = 'Could not copy setup';
+        }
+      });
+      document
+        .querySelectorAll('[data-close]')
+        .forEach((button) =>
+          button.addEventListener('click', () => document.getElementById(button.dataset.close).close()),
+        );
+      document.querySelectorAll('dialog').forEach((dialog) =>
+        dialog.addEventListener('click', (event) => {
+          if (event.target === dialog) dialog.close();
+        }),
+      );
+      refresh();
+      setInterval(refresh, 10000);
+    </script>
+  </body>
+</html>

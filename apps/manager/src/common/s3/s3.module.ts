@@ -1,18 +1,12 @@
-import { Global, Module } from '@nestjs/common';
+import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
-import { S3StorageService } from './s3-storage.service';
-import { LoggingService } from '../logging/logging.service';
+import { LoggingModule } from '../logging/logging.module';
+import { S3StorageService } from './services/s3-storage.service';
 
-@Global()
+// Provides the configured S3-compatible backup destination.
 @Module({
-  imports: [ConfigModule],
-  providers: [
-    S3StorageService,
-    {
-      provide: LoggingService,
-      useFactory: () => new LoggingService('S3StorageService'),
-    },
-  ],
+  imports: [ConfigModule, LoggingModule],
+  providers: [S3StorageService],
   exports: [S3StorageService],
 })
 export class S3Module {}

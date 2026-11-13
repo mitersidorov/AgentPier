@@ -1,0 +1,34 @@
+@startuml AgentPier-C4-Container
+!include <C4/C4_Container>
+LAYOUT_WITH_LEGEND()
+
+Person(user, "Developer", "Uses MCP clients and the read-only dashboard; reviews local changes")
+System_Ext(remoteS3, "S3-compatible storage", "Remote backup destination")
+System_Ext(github, "GitHub", "External remote repository")
+
+System_Boundary(host, "Host") {
+  Container_Ext(codexUi, "Codex desktop chat UI", "Codex app", "User-facing chat and MCP client for AgentPier orchestration")
+  Container(appserver, "Codex app-server", "WebSocket JSON-RPC", "Creates fresh threads; resolves registered host paths")
+  Container_Ext(agentSessions, "Managed agents", "Codex app-server threads", "Agents configured with their own profile, model default, project context, and approved task scope")
+  Container(checkout, "Project checkout", "Host filesystem / Git", "Local files and selected branch")
+}
+
+System_Boundary(compose, "AgentPier Docker Compose") {
+  Container(frontend, "Frontend dashboard", "Nginx / static HTML, CSS, JavaScript", "Read-only status/history presentation")
+  Container(manager, "Manager", "NestJS 11 / Node.js 22", "Streamable HTTP MCP endpoint, dashboard read model, orchestration, Codex integration, backups")
+  ContainerDb(mysql, "MySQL", "MySQL 8.4", "Persistent project, memory, task, plan, session, and backup records")
+}
+
+Rel(user, codexUi, "Discusses tasks and reviews plans/results")
+Rel(codexUi, manager, "Calls MCP tools directly", "Streamable HTTP :3100/mcp")
+Rel(user, frontend, "Views dashboard", "HTTP :3101")
+Rel(frontend, manager, "Reads dashboard data only", "HTTP GET /dashboard/*")
+Rel(manager, mysql, "Persists records and migration state", "TypeORM / MySQL")
+Rel(manager, appserver, "Starts and observes new threads", "WebSocket JSON-RPC :4500")
+Rel(appserver, agentSessions, "Creates fresh analysis and execution threads")
+Rel(agentSessions, checkout, "Reads/writes approved task files and runs Git within the selected sandbox")
+Rel(agentSessions, github, "Pushes code only when explicitly authorized")
+Rel(manager, remoteS3, "Uploads, lists, downloads, and deletes backup objects", "S3 API")
+
+SHOW_LEGEND()
+@enduml

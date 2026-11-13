@@ -17,23 +17,21 @@
     "test:watch": "jest --watch",
     "test:cov": "jest --coverage",
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
-    "test:e2e": "jest --config ./test/jest-e2e.json",
-    "migration:generate": "typeorm-ts-node-commonjs migration:generate -d apps/manager/src/common/database/data-source.ts",
-    "migration:run": "typeorm-ts-node-commonjs migration:run -d apps/manager/src/common/database/data-source.ts",
-    "migration:run:prod": "typeorm migration:run -d dist/apps/manager/src/common/database/data-source-prod.js",
-    "migration:revert": "typeorm-ts-node-commonjs migration:revert -d apps/manager/src/common/database/data-source.ts",
-    "migration:revert:prod": "typeorm migration:revert -d dist/apps/manager/src/common/database/data-source-prod.js",
-    "migration:show": "typeorm-ts-node-commonjs migration:show -d apps/manager/src/common/database/data-source.ts",
-    "migration:show:prod": "typeorm migration:show -d dist/apps/manager/src/common/database/data-source-prod.js"
+    "migration:generate": "typeorm-ts-node-commonjs migration:generate -d apps/manager/src/common/database/config/data-source.ts",
+    "migration:run": "typeorm-ts-node-commonjs migration:run -d apps/manager/src/common/database/config/data-source.ts",
+    "migration:run:prod": "typeorm migration:run -d dist/apps/manager/src/common/database/config/data-source-prod.js",
+    "migration:revert": "typeorm-ts-node-commonjs migration:revert -d apps/manager/src/common/database/config/data-source.ts",
+    "migration:revert:prod": "typeorm migration:revert -d dist/apps/manager/src/common/database/config/data-source-prod.js",
+    "migration:show": "typeorm-ts-node-commonjs migration:show -d apps/manager/src/common/database/config/data-source.ts",
+    "migration:show:prod": "typeorm migration:show -d dist/apps/manager/src/common/database/config/data-source-prod.js"
   },
   "dependencies": {
-    "@aws-sdk/client-s3": "^3.955.0",
+    "@aws-sdk/client-s3": "^3.1167.0",
     "@nestjs/common": "^11.0.1",
     "@nestjs/config": "^4.0.2",
     "@nestjs/core": "^11.0.1",
     "@nestjs/platform-express": "^11.0.1",
     "@nestjs/schedule": "^12.0.3",
-    "@nestjs/swagger": "^11.2.3",
     "@nestjs/throttler": "^6.5.0",
     "@nestjs/typeorm": "^11.0.0",
     "class-transformer": "^0.5.1",
@@ -42,7 +40,6 @@
     "mysql2": "^3.24.6",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1",
-    "swagger-ui-express": "^5.0.1",
     "typeorm": "^0.3.28",
     "uuid": "^13.0.0"
   },
@@ -78,12 +75,12 @@
       "json",
       "ts"
     ],
-      "rootDir": ".",
+    "rootDir": ".",
     "testRegex": ".*\\.spec\\.ts$",
     "transform": {
       "^.+\\.(t|j)s$": "ts-jest"
     },
-      "collectCoverageFrom": [
+    "collectCoverageFrom": [
       "apps/manager/src/**/*.(t|j)s"
     ],
     "coverageDirectory": "../coverage",

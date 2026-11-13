@@ -1,9 +1,10 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
-import { loadDockerSecrets } from '../util/secrets.util';
+import { loadDockerSecrets } from '../util/services/secrets.util';
 
 loadDockerSecrets();
 
+// Configures the persistent MySQL connection and entity discovery.
 @Module({
   imports: [
     TypeOrmModule.forRoot({

@@ -1,15 +1,11 @@
 import { Module } from '@nestjs/common';
-import { HttpService } from './http.service';
-import { LoggingService } from '../logging/logging.service';
+import { HttpService } from './services/http.service';
+import { LoggingModule } from '../logging/logging.module';
 
+// Provides a reusable outbound HTTP client with retry and timeout handling.
 @Module({
-  providers: [
-    HttpService,
-    {
-      provide: LoggingService,
-      useFactory: () => new LoggingService('HttpService'),
-    },
-  ],
+  imports: [LoggingModule],
+  providers: [HttpService],
   exports: [HttpService],
 })
 export class HttpModule {}
