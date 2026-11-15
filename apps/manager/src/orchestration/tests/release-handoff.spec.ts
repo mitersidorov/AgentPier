@@ -33,7 +33,7 @@ describe('release handoff', () => {
       load: jest.fn().mockResolvedValue({ profile: '', skills: [], version: 'v1', defaultModel: 'backend-model' }),
     };
     const service = new TaskOrchestratorService(records as any, profiles as any, codex as any, {} as any, {} as any);
-    (service as any).terminalTurns.set('turn-1', {
+    (service as any).sessionCoordinator.terminalTurns.set('turn-1', {
       turn: { status: 'completed', items: [{ type: 'agentMessage', text: 'AGENTPIER_RESULT: completed' }] },
     });
     await (service as any).executeStep(
