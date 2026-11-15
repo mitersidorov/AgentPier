@@ -10,5 +10,7 @@ export type Step = {
   repositoryId?: string;
   dependsOn: string[];
   checks?: string[];
+  executionCapabilities?: Array<'docker'>;
+  workingDirectory?: 'application' | 'repository';
   releaseOperations?: ReleaseOperation[];
 };

@@ -46,6 +46,8 @@ const taskPlanSchema = {
           repositoryId: { type: 'string', format: 'uuid' },
           dependsOn: { type: 'array', items: { type: 'string' } },
           checks: { type: 'array', items: { type: 'string' } },
+          executionCapabilities: { type: 'array', uniqueItems: true, items: { type: 'string', enum: ['docker'] } },
+          workingDirectory: { type: 'string', enum: ['application', 'repository'] },
           releaseOperations: {
             type: 'array',
             minItems: 1,
@@ -356,7 +358,8 @@ const tools: Array<{ name: string; description: string; inputSchema: Record<stri
   },
   {
     name: 'execute_task',
-    description: 'Execute an explicitly approved dependency plan in new Codex threads and local Git branches',
+    description:
+      'Execute an approved dependency plan in fresh profile-matched Codex threads; retry only incomplete steps',
     inputSchema: { type: 'object', properties: { taskId: { type: 'string', format: 'uuid' } }, required: ['taskId'] },
   },
   {
