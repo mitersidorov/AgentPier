@@ -105,6 +105,7 @@ export class TaskOrchestratorService implements OnModuleInit {
       );
     const latestByStep = new Map<string, any>();
     for (const item of previous) if (!latestByStep.has(item.data.id)) latestByStep.set(item.data.id, item);
+    await this.finalizeMissingMarker(taskId, steps, latestByStep);
     const failedLegacy = [...latestByStep.values()].filter(
       (item: any) => item.data.status === 'completed' && this.isRefusalResult(String(item.data.result || '')),
     );
@@ -162,6 +163,61 @@ export class TaskOrchestratorService implements OnModuleInit {
     });
     void this.executeGraph(taskId, steps, subtasks).catch((error) => this.failTask(taskId, error));
     return this.records.get(taskId);
+  }
+
+  async completeFromEvidence(
+    taskId: string,
+    subtaskId: string,
+    result: string,
+    evidence: string[],
+    userConfirmed: boolean,
+  ) {
+    if (userConfirmed !== true) throw new BadRequestException('Explicit user confirmation is required');
+    const task = await this.requireTask(taskId);
+    if (!['blocked', 'cancelled'].includes(task.data.status) || !task.data.approvedPlan)
+      throw new BadRequestException('Only a blocked or cancelled task with an approved plan can be reconciled');
+    await this.assertNoActiveTaskSessions(taskId, task.projectId || undefined);
+    const subtask: any = await this.records.get(subtaskId);
+    if (
+      subtask.kind !== 'subtask' ||
+      subtask.data.taskId !== taskId ||
+      !['blocked', 'cancelled'].includes(subtask.data.status)
+    )
+      throw new BadRequestException('subtaskId must refer to an incomplete subtask of this task');
+    if (!task.data.approvedPlan.steps?.some((step: any) => step.id === subtask.data.id))
+      throw new BadRequestException('The subtask does not match a step in the approved plan');
+    const normalizedEvidence = evidence.map((item) => item.trim()).filter(Boolean);
+    if (!normalizedEvidence.length) throw new BadRequestException('At least one verified result or check is required');
+
+    const reconciled = await this.records.update(subtaskId, {
+      ...subtask.data,
+      status: 'completed',
+      outcomeStatus: 'completed',
+      retryable: false,
+      completionEvidence: { source: 'user-confirmed-external-verification', evidence: normalizedEvidence },
+      result: `${result.trim()}\n\nVerified externally:\n${normalizedEvidence.map((item) => `- ${item}`).join('\n')}\n\nAGENTPIER_RESULT: completed`,
+      error: null,
+      finishedAt: new Date().toISOString(),
+    });
+    const allSubtasks = (await this.records.list('subtask', task.projectId || undefined)).filter(
+      (item: any) => item.data.taskId === taskId,
+    );
+    const latestByStep = new Map<string, any>();
+    for (const item of allSubtasks.sort(
+      (a: any, b: any) =>
+        Number(b.data.attempt || 0) - Number(a.data.attempt || 0) ||
+        String(b.data.createdAt || '').localeCompare(String(a.data.createdAt || '')),
+    ))
+      if (!latestByStep.has(item.data.id)) latestByStep.set(item.data.id, item.id === subtaskId ? reconciled : item);
+    const allComplete = task.data.approvedPlan.steps.every((step: any) =>
+      this.isReusableSuccess(latestByStep.get(step.id)),
+    );
+    return this.records.updateTask(taskId, {
+      status: allComplete ? 'review_ready' : 'blocked',
+      subtaskIds: task.data.approvedPlan.steps.map((step: any) => latestByStep.get(step.id)?.id).filter(Boolean),
+      error: allComplete ? null : 'Verified subtask completed; other approved steps remain incomplete',
+      ...(allComplete ? { completedAt: new Date().toISOString() } : {}),
+    });
   }
 
   async status(taskId: string) {
@@ -880,6 +936,121 @@ export class TaskOrchestratorService implements OnModuleInit {
   private agentResultStatus(result: string): 'completed' | 'partial' | 'blocked' | null {
     const match = result.match(/^AGENTPIER_RESULT:\s*(completed|partial|blocked)\s*$/im);
     return (match?.[1] as 'completed' | 'partial' | 'blocked' | undefined) || null;
+  }
+
+  private async finalizeMissingMarker(taskId: string, steps: Step[], latestByStep: Map<string, any>) {
+    const task = await this.requireTask(taskId);
+    for (const step of steps) {
+      const subtask = latestByStep.get(step.id);
+      if (subtask?.data?.status !== 'blocked' || this.agentResultStatus(String(subtask.data.result || ''))) continue;
+      if (
+        !/required AGENTPIER_RESULT|completion marker|completion status/i.test(
+          String(subtask.data.error || task.data.error || ''),
+        )
+      )
+        continue;
+
+      const sessionId = subtask.data.sessionId;
+      if (!sessionId) continue;
+      const session: any = await this.records.get(sessionId);
+      if (
+        session.kind !== 'session' ||
+        session.data.taskId !== taskId ||
+        session.data.status !== 'completed' ||
+        !session.data.threadId ||
+        session.data.cwd !== subtask.data.path
+      )
+        continue;
+
+      const runtime = await this.profiles.resolveRuntime({
+        defaultModel: session.data.effectiveModel || session.data.model || null,
+        defaultReasoningEffort: session.data.effectiveReasoningEffort || session.data.reasoningEffort || 'medium',
+      });
+      const role = step.profile || 'backend-nestjs';
+      const profile = await this.profiles.load(role);
+      const started = await this.codex.startThread({
+        cwd: subtask.data.path,
+        profileInstructions: `${profile.profile}\n\n${profile.skills.map((skill: any) => skill.content).join('\n\n')}`,
+        developerInstructions: [
+          'This is a separate, read-only finalization session. The original implementation turn has ended. Do not implement, edit, commit, push, create a PR, merge, or run browser/E2E checks.',
+          `Persisted task ID: ${taskId}; subtask ID: ${subtask.id}; step ID: ${step.id}; profile: ${role}.`,
+          `Application: ${subtask.data.applicationId || step.appId || ''}; repository: ${subtask.data.repositoryId || ''}; application working directory: ${subtask.data.path}; approved branch: ${step.targetBranch}.`,
+          'The current turn exists only to inspect the existing report and working tree, summarize checks already performed (including checks performed locally outside the agent sandbox), distinguish environment failures from product failures, and provide the required final marker.',
+        ].join('\n\n'),
+        mode: 'read-only',
+        model: runtime.model,
+      });
+      const prompt = [
+        'This is a report-only review of a previously completed managed step. Do not repeat implementation, edit files, or rerun browser/E2E checks.',
+        `Persisted task ID: ${taskId}; subtask ID: ${subtask.id}; step ID: ${step.id}; profile: ${step.profile}.`,
+        `Repository: ${subtask.data.repositoryId || ''}; application: ${subtask.data.applicationId || step.appId || ''}; working directory: ${subtask.data.path}; approved branch: ${step.targetBranch}.`,
+        `Your prior turn produced work but omitted its required completion marker. Prior report:\n${String(subtask.data.result || '(empty)').slice(0, 10000)}`,
+        'Inspect the existing report and current working tree read-only. If the report records approved checks run locally outside this session, count those as evidence and do not repeat them. Separate tool/session failures from product failures. State completed checks and any environment limitation. Do not commit, push, create a PR, or merge.',
+        'If the approved work is complete and its checks are supported by the report/current files, finish with exactly: AGENTPIER_RESULT: completed. If material work or required evidence is missing, explain it and finish with AGENTPIER_RESULT: partial or AGENTPIER_RESULT: blocked.',
+      ].join('\n\n');
+      const finalizationSession: any = await this.records.create(
+        'session',
+        {
+          taskId,
+          subtaskId: subtask.id,
+          phase: 'finalization',
+          profile: role,
+          model: runtime.model,
+          effectiveModel: runtime.model,
+          reasoningEffort: runtime.effort,
+          effectiveReasoningEffort: runtime.effort,
+          applicationId: session.data.applicationId || step.appId || null,
+          repositoryId: session.data.repositoryId || step.repositoryId || null,
+          threadId: started.threadId,
+          codexSessionId: started.sessionId,
+          status: 'running',
+          attached: true,
+          cwd: subtask.data.path,
+          finalizationOnly: true,
+          startedAt: new Date().toISOString(),
+        },
+        task.projectId || undefined,
+      );
+      const turn = await this.codex.startTurn({
+        threadId: started.threadId,
+        cwd: subtask.data.path,
+        prompt,
+        mode: 'read-only',
+        ...runtime,
+      });
+      finalizationSession.data = { ...finalizationSession.data, turnId: turn.turnId };
+      await this.records.update(finalizationSession.id, finalizationSession.data);
+      await this.records.update(subtask.id, { ...subtask.data, status: 'running', finalizationOnly: true });
+      const terminal = await this.waitForTurn(started.threadId, turn.turnId, 20 * 60 * 1000);
+      const result = this.extractText(terminal.turn);
+      const outcomeStatus = terminal.turn?.status === 'completed' ? this.agentResultStatus(result) : null;
+      const completed = outcomeStatus === 'completed';
+      const message = completed
+        ? null
+        : outcomeStatus
+          ? `Agent reported ${outcomeStatus} while reconciling the completed step`
+          : 'Finalization turn failed or omitted its required completion marker';
+      await this.records.update(finalizationSession.id, {
+        ...finalizationSession.data,
+        status: terminal.turn?.status === 'completed' ? 'completed' : 'failed',
+        result: this.redact(result),
+        finalizationOnly: true,
+        completedAt: new Date().toISOString(),
+        error: message,
+      });
+      const reconciled = await this.records.update(subtask.id, {
+        ...subtask.data,
+        status: completed ? 'completed' : 'blocked',
+        outcomeStatus: completed ? 'completed' : outcomeStatus || 'blocked',
+        retryable: !completed,
+        result: [String(subtask.data.result || ''), 'Final status report:', result].filter(Boolean).join('\n\n'),
+        completionEvidence: completed ? 'agent-finalization-report' : undefined,
+        error: message,
+        finishedAt: new Date().toISOString(),
+      });
+      latestByStep.set(step.id, reconciled);
+      if (!completed) throw new BadRequestException(message || 'The managed step remains incomplete');
+    }
   }
 
   private isRefusalResult(result: string) {

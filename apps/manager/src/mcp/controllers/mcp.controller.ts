@@ -26,6 +26,7 @@ import { DeleteProjectDto } from '../../projects/dto/delete-project.dto';
 import { EmptyToolArgumentsDto } from '../dto/empty-tool-arguments.dto';
 import { TaskPlanDto } from '../../tasks/dto/task-plan.dto';
 import { UpdateAgentProfileDto } from '../../agents/dto/update-agent-profile.dto';
+import { CompleteTaskFromEvidenceDto } from '../../tasks/dto/complete-task-from-evidence.dto';
 
 const taskPlanSchema = {
   type: 'object',
@@ -363,6 +364,22 @@ const tools: Array<{ name: string; description: string; inputSchema: Record<stri
     inputSchema: { type: 'object', properties: { taskId: { type: 'string', format: 'uuid' } }, required: ['taskId'] },
   },
   {
+    name: 'complete_task_from_evidence',
+    description:
+      'Complete a blocked or cancelled approved subtask from user-confirmed checks already run outside the managed session; does not rerun implementation or tests',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        taskId: { type: 'string', format: 'uuid' },
+        subtaskId: { type: 'string', format: 'uuid' },
+        result: { type: 'string', minLength: 1, maxLength: 20000 },
+        evidence: { type: 'array', minItems: 1, items: { type: 'string', minLength: 1, maxLength: 2000 } },
+        userConfirmed: { const: true },
+      },
+      required: ['taskId', 'subtaskId', 'result', 'evidence', 'userConfirmed'],
+    },
+  },
+  {
     name: 'get_task_status',
     description: 'Get task, subtask, Codex session and reconnect state',
     inputSchema: { type: 'object', properties: { taskId: { type: 'string', format: 'uuid' } }, required: ['taskId'] },
@@ -491,6 +508,7 @@ export class McpController {
       save_plan: SavePlanDto,
       approve_plan: ApprovePlanDto,
       execute_task: TaskIdDto,
+      complete_task_from_evidence: CompleteTaskFromEvidenceDto,
       get_task_status: TaskIdDto,
       get_agent_messages: TaskIdDto,
       send_agent_message: SendAgentMessageDto,
@@ -563,6 +581,16 @@ export class McpController {
       }
       case 'execute_task':
         return this.tasks.execute(args.taskId);
+      case 'complete_task_from_evidence': {
+        const input = args as CompleteTaskFromEvidenceDto;
+        return this.tasks.completeFromEvidence(
+          input.taskId,
+          input.subtaskId,
+          input.result,
+          input.evidence,
+          input.userConfirmed,
+        );
+      }
       case 'get_task_status':
         return this.tasks.status(args.taskId);
       case 'get_agent_messages':
