@@ -1,7 +1,7 @@
 import { BadRequestException } from '@nestjs/common';
 import { ApplicationService } from '../services/application.service';
 
-describe('ApplicationService.manage registration', () => {
+describe('ApplicationService.manage', () => {
   const project = { id: 'project-1', kind: 'project', projectId: null, data: {} };
   const records = {
     get: jest.fn(),
@@ -47,6 +47,47 @@ describe('ApplicationService.manage registration', () => {
         projectId: project.id,
         kind: 'repository',
         data: { name: 'AgentPier', path: '/checkout', purpose: 'application' },
+      } as any),
+    ).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('updates an application by recordId within its project', async () => {
+    const application = { id: 'app-1', kind: 'app', projectId: project.id, data: { name: 'Old', path: '/old' } };
+    records.get.mockResolvedValueOnce(project).mockResolvedValueOnce(application);
+    records.update.mockResolvedValue({ ...application, data: { name: 'New', path: '/new' } });
+
+    await expect(
+      service.manage({
+        action: 'update',
+        projectId: project.id,
+        recordId: application.id,
+        data: { name: 'New', path: '/new' },
+      } as any),
+    ).resolves.toMatchObject({ data: { name: 'New', path: '/new' } });
+    expect(records.update).toHaveBeenCalledWith(application.id, { name: 'New', path: '/new' });
+  });
+
+  it('updates a repository remote URL and rejects records from another project', async () => {
+    const repository = { id: 'repo-1', kind: 'repository', projectId: project.id, data: { remoteUrl: 'old' } };
+    records.get.mockResolvedValueOnce(project).mockResolvedValueOnce(repository);
+    records.update.mockResolvedValue({ ...repository, data: { remoteUrl: 'https://example.test/repo' } });
+    await expect(
+      service.manage({
+        action: 'update',
+        projectId: project.id,
+        recordId: repository.id,
+        kind: 'repository',
+        data: { remoteUrl: 'https://example.test/repo' },
+      } as any),
+    ).resolves.toMatchObject({ data: { remoteUrl: 'https://example.test/repo' } });
+
+    records.get.mockResolvedValueOnce(project).mockResolvedValueOnce({ ...repository, projectId: 'other-project' });
+    await expect(
+      service.manage({
+        action: 'update',
+        projectId: project.id,
+        recordId: repository.id,
+        data: { name: 'Wrong project' },
       } as any),
     ).rejects.toBeInstanceOf(BadRequestException);
   });

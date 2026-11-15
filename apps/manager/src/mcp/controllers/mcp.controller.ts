@@ -201,7 +201,7 @@ const tools: Array<{ name: string; description: string; inputSchema: Record<stri
   },
   {
     name: 'update_project',
-    description: 'Update project metadata or constraints',
+    description: 'Edit an existing project record: name, checkout path, description, instructions, or constraints',
     inputSchema: {
       type: 'object',
       properties: {
@@ -234,7 +234,7 @@ const tools: Array<{ name: string; description: string; inputSchema: Record<stri
   },
   {
     name: 'manage_applications',
-    description: 'List, register or update project applications and repositories',
+    description: 'List, create, or edit application and repository records linked to a project',
     inputSchema: {
       type: 'object',
       properties: {
