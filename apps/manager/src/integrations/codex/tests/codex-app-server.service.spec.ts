@@ -132,6 +132,56 @@ describe('CodexAppServerService managed sandbox policies', () => {
       25000,
     );
   });
+
+  it('grants the local Docker socket only when an approved execution step supplies its socket path', async () => {
+    const service = createService();
+    const request = jest.spyOn(service, 'request').mockResolvedValue({ turn: { id: 'turn-docker' } });
+    await service.startTurn({
+      threadId: 'thread-1',
+      cwd: '/repo/apps/backend',
+      prompt: 'Run the approved Compose checks',
+      mode: 'workspace-write',
+      dockerSocketPath: '/Users/test/.docker/run/docker.sock',
+    });
+    expect(request).toHaveBeenCalledWith(
+      'turn/start',
+      expect.objectContaining({
+        approvalPolicy: 'never',
+        sandboxPolicy: {
+          type: 'workspaceWrite',
+          writableRoots: ['/repo/apps/backend', '/Users/test/.docker/run/docker.sock'],
+          networkAccess: false,
+        },
+      }),
+    );
+  });
+
+  it('resolves only an active local Unix socket for Docker execution', async () => {
+    const service = createService();
+    jest
+      .spyOn(service, 'runCommand')
+      .mockResolvedValueOnce('')
+      .mockResolvedValueOnce('unix:///Users/test/.docker/run/docker.sock')
+      .mockResolvedValueOnce('')
+      .mockResolvedValueOnce('/Users/test/.docker/run');
+    await expect(service.localDockerSocketPath('/repo')).resolves.toBe('/Users/test/.docker/run/docker.sock');
+
+    const remote = new CodexAppServerService({} as any, {} as any);
+    jest.spyOn(remote, 'runCommand').mockResolvedValueOnce('tcp://docker.example.test:2376');
+    await expect(remote.localDockerSocketPath('/repo')).rejects.toThrow(/local Unix socket/);
+  });
+
+  it('uses DOCKER_HOST from the app-server host without inspecting or logging remote context details', async () => {
+    const service = createService();
+    const command = jest.spyOn(service, 'runCommand').mockResolvedValueOnce('tcp://user:secret@remote:2376');
+    await expect(service.localDockerSocketPath('/repo')).rejects.toThrow(/local Unix socket/);
+    expect(command).toHaveBeenCalledTimes(1);
+    expect(command).toHaveBeenCalledWith('/repo', [
+      'node',
+      '-e',
+      'process.stdout.write(process.env.DOCKER_HOST || "")',
+    ]);
+  });
 });
 
 describe('scoped release policy', () => {

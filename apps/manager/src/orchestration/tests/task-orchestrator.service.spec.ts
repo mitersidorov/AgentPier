@@ -204,11 +204,42 @@ describe('TaskOrchestratorService notifications', () => {
 });
 
 describe('TaskOrchestratorService branch policy', () => {
-  const runStep = async (targetBranch: string) => {
+  const runStep = async (
+    targetBranch: string,
+    result = 'AGENTPIER_RESULT: completed',
+    executionCapabilities: Array<'docker'> = [],
+  ) => {
     const task = { id: 'task-12345678', kind: 'task', projectId: 'project-1', data: { originalRequest: 'request' } };
     const subtask = { id: 'subtask-1', data: {} };
+    const session = { id: 'session-1', data: { taskId: task.id, subtaskId: subtask.id } };
+    const app = {
+      id: 'app-1',
+      name: 'Backend',
+      kind: 'app',
+      projectId: task.projectId,
+      data: { name: 'Backend', purpose: 'API', path: '/repo/apps/backend' },
+    };
+    const repo = {
+      id: 'repo-1',
+      name: 'PregnantBot',
+      kind: 'repository',
+      projectId: task.projectId,
+      data: { name: 'PregnantBot', path: '/repo' },
+    };
     const records = {
-      get: jest.fn().mockResolvedValue(task),
+      get: jest
+        .fn()
+        .mockImplementation(async (id: string) =>
+          id === app.id
+            ? app
+            : id === repo.id
+              ? repo
+              : id === session.id
+                ? session
+                : id === subtask.id
+                  ? subtask
+                  : task,
+        ),
       update: jest.fn().mockResolvedValue(subtask),
       getProjectContext: jest.fn().mockResolvedValue({
         project: { data: {} },
@@ -217,7 +248,7 @@ describe('TaskOrchestratorService branch policy', () => {
         instructions: [],
         confirmedMemory: [],
       }),
-      create: jest.fn().mockResolvedValue({ id: 'session-1', data: {} }),
+      create: jest.fn().mockResolvedValue(session),
     };
     const codex = {
       events: new EventEmitter(),
@@ -229,28 +260,45 @@ describe('TaskOrchestratorService branch policy', () => {
         .mockResolvedValueOnce('diff stat'),
       startThread: jest.fn().mockResolvedValue({ threadId: 'thread-1', sessionId: 'codex-1', instructionSources: [] }),
       startTurn: jest.fn().mockResolvedValue({ turnId: 'turn-1' }),
+      localDockerSocketPath: jest.fn().mockResolvedValue('/Users/test/.docker/run/docker.sock'),
     };
     const profiles = {
       resolveRuntime: jest.fn().mockResolvedValue({ model: 'backend-model', effort: 'medium' }),
       load: jest.fn().mockResolvedValue({ profile: '', skills: [], version: 'v1', defaultModel: 'backend-model' }),
     };
     const service = new TaskOrchestratorService(records as any, profiles as any, codex as any, {} as any, {} as any);
-    (service as any).terminalTurns.set('turn-1', { turn: { status: 'completed', items: [] } });
-    await (service as any).executeStep(
-      task.id,
-      task.projectId,
-      { id: 'step-1', title: 'change', description: 'change it', targetBranch, dependsOn: ['declared'] },
-      subtask,
-      process.cwd(),
-      { declared: 'contract '.repeat(1000), unrelated: 'must-not-leak' },
-    );
+    (service as any).terminalTurns.set('turn-1', {
+      turn: { status: 'completed', items: [{ type: 'agentMessage', text: result }] },
+    });
+    try {
+      await (service as any).executeStep(
+        task.id,
+        task.projectId,
+        {
+          id: 'step-1',
+          title: 'change',
+          description: 'change it',
+          targetBranch,
+          appId: app.id,
+          repositoryId: repo.id,
+          dependsOn: ['declared'],
+          executionCapabilities,
+        },
+        subtask,
+        app.data.path,
+        { declared: 'contract '.repeat(1000), unrelated: 'must-not-leak' },
+      );
+    } catch (error) {
+      (error as any).testHarness = { codex, records };
+      throw error;
+    }
     return { codex, records };
   };
 
   it('uses the explicitly selected active branch without switching or creating a branch', async () => {
     const { codex, records } = await runStep('feature/work');
 
-    expect(codex.runCommand).toHaveBeenCalledWith(process.cwd(), ['git', 'branch', '--show-current']);
+    expect(codex.runCommand).toHaveBeenCalledWith('/repo/apps/backend', ['git', 'branch', '--show-current']);
     expect(records.update).toHaveBeenCalledWith('subtask-1', expect.objectContaining({ branch: 'feature/work' }));
     expect(codex.startThread).toHaveBeenCalledWith(expect.objectContaining({ model: 'backend-model' }));
     expect(codex.startTurn).toHaveBeenCalledWith(expect.objectContaining({ model: 'backend-model', effort: 'medium' }));
@@ -258,6 +306,12 @@ describe('TaskOrchestratorService branch policy', () => {
     expect(prompt).not.toContain('must-not-leak');
     expect(prompt).toContain('"stepId":"declared"');
     expect(prompt).toContain('"truncated":true');
+    const developerInstructions = codex.startThread.mock.calls[0][0].developerInstructions;
+    expect(developerInstructions).toContain('Persisted AgentPier task ID: task-12345678');
+    expect(developerInstructions).toContain('Persisted subtask ID: subtask-1');
+    expect(developerInstructions).toContain('Do not call AgentPier MCP tools such as execute_task or get_task_status');
+    expect(developerInstructions).toContain('Application working directory: /repo/apps/backend');
+    expect(developerInstructions).toContain('Repository root: /repo');
     expect(prompt.length).toBeLessThan(5000);
     expect(records.create).toHaveBeenCalledWith(
       'session',
@@ -274,11 +328,103 @@ describe('TaskOrchestratorService branch policy', () => {
     await expect(runStep('feature/another')).rejects.toThrow(/AgentPier will not switch branches/);
   });
 
+  it.each(['AGENTPIER_RESULT: blocked', 'AGENTPIER_RESULT: partial', 'No completion marker; I cannot proceed'])(
+    'keeps a refused or incomplete turn retryable instead of marking its subtask complete: %s',
+    async (result) => {
+      let failure: any;
+      try {
+        await runStep('feature/work', result);
+      } catch (error) {
+        failure = error;
+      }
+      expect(failure?.message).toMatch(/Agent reported|did not provide/);
+      const { records } = failure.testHarness;
+      expect(records.update).toHaveBeenCalledWith(
+        'subtask-1',
+        expect.objectContaining({ status: 'blocked', retryable: true }),
+      );
+    },
+  );
+
+  it('uses the registered application directory when a step also names its repository', async () => {
+    const records = {
+      get: jest
+        .fn()
+        .mockImplementation(async (id: string) =>
+          id === 'app-1'
+            ? { id, kind: 'app', projectId: 'project-1', data: { path: '/repo/apps/backend' } }
+            : { id, kind: 'repository', projectId: 'project-1', data: { path: '/repo' } },
+        ),
+    };
+    const service = new TaskOrchestratorService(records as any, {} as any, {} as any, {} as any, {} as any);
+    await expect(
+      (service as any).stepRepoPath('project-1', { id: 'step-1', appId: 'app-1', repositoryId: 'repo-1' }),
+    ).resolves.toBe('/repo/apps/backend');
+    await expect(
+      (service as any).stepRepoPath('project-1', {
+        id: 'step-2',
+        appId: 'app-1',
+        repositoryId: 'repo-1',
+        checks: ['docker compose config'],
+      }),
+    ).resolves.toBe('/repo');
+  });
+
+  it('allows sibling application directories to run in parallel but locks repository-root overlaps', () => {
+    const service = new TaskOrchestratorService({} as any, {} as any, {} as any, {} as any, {} as any);
+    expect((service as any).pathsOverlap('/repo/apps/backend', '/repo/apps/webapp')).toBe(false);
+    expect((service as any).pathsOverlap('/repo', '/repo/apps/backend')).toBe(true);
+  });
+
+  it('blocks repository-root work while an application session is active but permits sibling applications', async () => {
+    const records = {
+      list: jest.fn(async (kind: string) =>
+        kind === 'session' ? [{ data: { status: 'running', cwd: '/repo/apps/backend' } }] : [],
+      ),
+    };
+    const service = new TaskOrchestratorService(records as any, {} as any, {} as any, {} as any, {} as any);
+    await expect(
+      (service as any).assertNoActivePathSessions('project-1', '/repo/apps/webapp', 'other-task'),
+    ).resolves.toBeUndefined();
+    await expect((service as any).assertNoActivePathSessions('project-1', '/repo', 'other-task')).rejects.toThrow(
+      /overlapping managed session is already running/,
+    );
+  });
+
   it('requires an explicit target branch instead of inferring or creating one', () => {
     const service = new TaskOrchestratorService({} as any, {} as any, {} as any, {} as any, {} as any);
     expect(() =>
       (service as any).normalizeSteps([{ title: 'change', description: 'change it' }], new Set(['backend-nestjs'])),
     ).toThrow(/Ask the user which branch to use and wait/);
+  });
+
+  it('derives scoped Docker access and repository working directory from an approved Compose check', () => {
+    const service = new TaskOrchestratorService({} as any, {} as any, {} as any, {} as any, {} as any);
+    const [step] = (service as any).normalizeSteps(
+      [
+        {
+          id: 'runtime',
+          title: 'Run local integration',
+          description: 'Run approved Compose checks',
+          targetBranch: 'fix/task',
+          profile: 'backend-nestjs',
+          appId: 'app-id',
+          repositoryId: 'repo-id',
+          checks: ['docker compose config', 'Full local E2E'],
+        },
+      ],
+      new Set(['backend-nestjs']),
+    );
+    expect(step.executionCapabilities).toEqual(['docker']);
+    expect(step.workingDirectory).toBe('repository');
+  });
+
+  it('passes the local Docker socket only for a capability declared in the approved step', async () => {
+    const { codex } = await runStep('feature/work', 'AGENTPIER_RESULT: completed', ['docker']);
+    expect(codex.localDockerSocketPath).toHaveBeenCalledWith('/repo/apps/backend');
+    expect(codex.startTurn).toHaveBeenCalledWith(
+      expect.objectContaining({ dockerSocketPath: '/Users/test/.docker/run/docker.sock' }),
+    );
   });
 });
 
@@ -297,6 +443,125 @@ describe('TaskOrchestratorService project instruction context', () => {
     expect(promptContext).toContain('Use NestJS.');
     expect(promptContext).not.toContain('legacy text');
     expect(promptContext).not.toContain('legacy constraint');
+  });
+});
+
+describe('TaskOrchestratorService retry behavior', () => {
+  const steps = [
+    {
+      id: 'frontend',
+      title: 'Frontend',
+      description: 'Update UI',
+      profile: 'frontend-angular',
+      targetBranch: 'fix/task',
+    },
+    { id: 'backend', title: 'Backend', description: 'Update API', profile: 'backend-nestjs', targetBranch: 'fix/task' },
+  ];
+
+  const retryHarness = (status: string, backendStatus: string, backendResult: string) => {
+    const task = {
+      id: 'task-1',
+      kind: 'task',
+      projectId: 'project-1',
+      data: { status, approvedPlan: { steps }, attempt: 1 },
+    };
+    const previous = [
+      {
+        id: 'frontend-old',
+        data: {
+          id: 'frontend',
+          taskId: task.id,
+          title: 'Frontend',
+          attempt: 1,
+          status: 'completed',
+          outcomeStatus: 'completed',
+          result: 'Frontend work completed. AGENTPIER_RESULT: completed',
+        },
+      },
+      {
+        id: 'backend-old',
+        data: {
+          id: 'backend',
+          taskId: task.id,
+          title: 'Backend',
+          attempt: 1,
+          status: backendStatus,
+          result: backendResult,
+        },
+      },
+    ];
+    const records = {
+      get: jest.fn().mockResolvedValue(task),
+      list: jest.fn(async (kind: string) => (kind === 'subtask' ? previous : [])),
+      create: jest
+        .fn()
+        .mockResolvedValue({ id: 'backend-retry', data: { id: 'backend', taskId: task.id, status: 'queued' } }),
+      update: jest.fn().mockResolvedValue(undefined),
+      updateTask: jest.fn(async (_id: string, patch: any) => ({ ...task, data: { ...task.data, ...patch } })),
+    };
+    const service = new TaskOrchestratorService(
+      records as any,
+      { list: jest.fn().mockResolvedValue([{ role: 'backend-nestjs' }, { role: 'frontend-angular' }]) } as any,
+      {} as any,
+      {} as any,
+      { forTask: jest.fn().mockResolvedValue([]) } as any,
+    );
+    (service as any).executeGraph = jest.fn().mockResolvedValue(undefined);
+    return { task, previous, records, service };
+  };
+
+  it('retries only blocked steps with a new subtask and reuses successful dependencies', async () => {
+    const { records, service } = retryHarness('blocked', 'blocked', 'Agent cannot access approval-required tools.');
+    await service.execute('task-1');
+    expect(records.create).toHaveBeenCalledTimes(1);
+    expect(records.create).toHaveBeenCalledWith(
+      'subtask',
+      expect.objectContaining({ id: 'backend', attempt: 2, status: 'queued' }),
+      'project-1',
+    );
+    expect((service as any).executeGraph).toHaveBeenCalledWith(
+      'task-1',
+      steps.map((step) => ({ ...step, dependsOn: [], executionCapabilities: [], workingDirectory: undefined })),
+      [expect.objectContaining({ id: 'frontend-old' }), expect.objectContaining({ id: 'backend-retry' })],
+    );
+  });
+
+  it('reclassifies a legacy completed refusal as blocked and makes it retryable', async () => {
+    const { records, service } = retryHarness(
+      'review_ready',
+      'completed',
+      'I can’t begin because AgentPier MCP requires approval and policy is never. No files changed.',
+    );
+    await service.execute('task-1');
+    expect(records.update).toHaveBeenCalledWith(
+      'backend-old',
+      expect.objectContaining({ status: 'blocked', outcomeStatus: 'blocked', retryable: true }),
+    );
+    expect(records.updateTask).toHaveBeenCalledWith('task-1', expect.objectContaining({ status: 'blocked' }));
+    expect(records.create).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not start a retry while a previous task session is active', async () => {
+    const task = {
+      id: 'task-1',
+      kind: 'task',
+      projectId: 'project-1',
+      data: { status: 'blocked', approvedPlan: { steps }, attempt: 1 },
+    };
+    const records = {
+      get: jest.fn().mockResolvedValue(task),
+      list: jest.fn().mockResolvedValue([]),
+      create: jest.fn(),
+    };
+    const service = new TaskOrchestratorService(
+      records as any,
+      { list: jest.fn().mockResolvedValue([{ role: 'backend-nestjs' }, { role: 'frontend-angular' }]) } as any,
+      {} as any,
+      {} as any,
+      { forTask: jest.fn().mockResolvedValue([{ data: { status: 'running' } }]) } as any,
+    );
+    await expect(service.execute('task-1')).rejects.toThrow(/prior task sessions are still active/);
+    expect(records.create).not.toHaveBeenCalled();
   });
 });
 

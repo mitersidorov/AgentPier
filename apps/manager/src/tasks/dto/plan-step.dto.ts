@@ -1,6 +1,16 @@
 import { ReleaseOperation } from '../types/release-operation.type';
 import { ReleaseOperationsConstraint } from './validators/release-operations.validator';
-import { ArrayUnique, IsArray, IsNotEmpty, IsOptional, IsString, Matches, MaxLength, Validate } from 'class-validator';
+import {
+  ArrayUnique,
+  IsArray,
+  IsIn,
+  IsNotEmpty,
+  IsOptional,
+  IsString,
+  Matches,
+  MaxLength,
+  Validate,
+} from 'class-validator';
 
 export class PlanStepDto {
   @Validate(ReleaseOperationsConstraint) releaseOperations?: ReleaseOperation[];
@@ -19,4 +29,6 @@ export class PlanStepDto {
   repositoryId?: string;
   @IsOptional() @IsArray() @ArrayUnique() @IsString({ each: true }) dependsOn?: string[];
   @IsOptional() @IsArray() @IsString({ each: true }) checks?: string[];
+  @IsOptional() @IsArray() @ArrayUnique() @IsIn(['docker'], { each: true }) executionCapabilities?: string[];
+  @IsOptional() @IsIn(['application', 'repository']) workingDirectory?: 'application' | 'repository';
 }

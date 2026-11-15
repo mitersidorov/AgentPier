@@ -4,7 +4,7 @@ import { RpcMessage } from '../types/rpc-message.type';
 import { HttpService } from '../../../common/http/services/http.service';
 import { LoggingService } from '../../../common/logging/services/logging.service';
 import { EventEmitter } from 'node:events';
-import { relative, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 
 @Injectable()
 export class CodexAppServerService implements OnModuleDestroy {
@@ -178,11 +178,27 @@ export class CodexAppServerService implements OnModuleDestroy {
     model?: string;
     effort?: string;
     releaseOperations?: ReleaseOperation[];
+    dockerSocketPath?: string;
   }) {
     if (input.releaseOperations !== undefined && input.mode !== 'workspace-write')
       throw new Error('Release scope requires workspace-write execution');
+    if (input.dockerSocketPath && input.mode !== 'workspace-write')
+      throw new Error('Docker host access requires workspace-write execution');
+    if (input.dockerSocketPath && !isAbsolute(input.dockerSocketPath))
+      throw new Error('Docker socket path must be absolute');
     const releasePolicy =
       input.releaseOperations === undefined ? undefined : await this.releasePolicy(input.cwd, input.releaseOperations);
+    const writableRoots = [
+      ...new Set([
+        input.cwd,
+        ...(releasePolicy?.writableRoots || []),
+        ...(input.dockerSocketPath ? [input.dockerSocketPath] : []),
+      ]),
+    ];
+    const sandboxPolicy =
+      input.mode === 'read-only'
+        ? { type: 'readOnly', networkAccess: false }
+        : { type: 'workspaceWrite', writableRoots, networkAccess: releasePolicy?.networkAccess ?? false };
     const turnResponse = await this.request('turn/start', {
       threadId: input.threadId,
       ...(input.model ? { model: input.model } : {}),
@@ -190,12 +206,25 @@ export class CodexAppServerService implements OnModuleDestroy {
       cwd: input.cwd,
       input: [{ type: 'text', text: input.prompt, text_elements: [] }],
       approvalPolicy: 'never',
-      sandboxPolicy:
-        input.mode === 'read-only'
-          ? { type: 'readOnly', networkAccess: false }
-          : releasePolicy || { type: 'workspaceWrite', writableRoots: [input.cwd], networkAccess: false },
+      sandboxPolicy,
     });
     return { turnId: turnResponse.turn.id };
+  }
+
+  async localDockerSocketPath(cwd: string) {
+    const configuredHost = (
+      await this.runCommand(cwd, ['node', '-e', 'process.stdout.write(process.env.DOCKER_HOST || "")'])
+    ).trim();
+    const host =
+      configuredHost ||
+      (await this.runCommand(cwd, ['docker', 'context', 'inspect', '--format', '{{.Endpoints.docker.Host}}'])).trim();
+    if (!host.startsWith('unix://'))
+      throw new Error('Docker capability requires a local Unix socket; remote Docker contexts are not supported');
+    const socket = host.slice('unix://'.length);
+    if (!isAbsolute(socket) || /[\r\n]/.test(socket)) throw new Error('Docker context returned an invalid socket path');
+    await this.runCommand(cwd, ['test', '-S', socket]);
+    const socketDirectory = await this.resolveHostPath(dirname(socket));
+    return join(socketDirectory, basename(socket));
   }
 
   async resumeThread(threadId: string) {
