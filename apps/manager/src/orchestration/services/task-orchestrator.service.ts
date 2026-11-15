@@ -1,9 +1,8 @@
-import { validReleaseOperations } from '../../tasks/types/release-operation.type';
 import { selectSkills, skillEvidence } from '../../agents/services/skill-selection';
 import { BadRequestException, Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
-import { isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { join, resolve } from 'node:path';
 import { AgentProfileService } from '../../agents/services/agent-profile.service';
 import { AgentRole } from '../../agents/types/agent-role.type';
 import { Step } from '../types/orchestration-step.type';
@@ -11,13 +10,12 @@ import { CodexAppServerService } from '../../integrations/codex/services/codex-a
 import { ManagerService } from '../../manager/services/manager.service';
 import { BackupService } from '../../backup/services/backup.service';
 import { SessionService } from '../../sessions/services/session.service';
+import { CodexSessionCoordinatorService } from './codex-session-coordinator.service';
+import { ApprovedPlanExecutionService } from './approved-plan-execution.service';
 
 @Injectable()
 export class TaskOrchestratorService implements OnModuleInit {
   private readonly logger = new Logger(TaskOrchestratorService.name);
-  private readonly waiters = new Map<string, Array<(event: any) => void>>();
-  private readonly terminalTurns = new Map<string, any>();
-  private readonly activeWritePaths = new Set<string>();
 
   constructor(
     private readonly records: ManagerService,
@@ -25,14 +23,13 @@ export class TaskOrchestratorService implements OnModuleInit {
     private readonly codex: CodexAppServerService,
     private readonly backups: BackupService,
     private readonly sessionRecords: SessionService,
+    private readonly sessionCoordinator: CodexSessionCoordinatorService = new CodexSessionCoordinatorService(records),
+    private readonly approvedPlanExecution: ApprovedPlanExecutionService = new ApprovedPlanExecutionService(),
   ) {}
 
   async onModuleInit() {
     this.codex.events.on('notification', (event) => this.handleNotification(event));
-    const active = (await this.records.list('session')).filter((row) =>
-      ['running', 'waiting_for_user'].includes(row.data.status),
-    );
-    for (const session of active) await this.records.update(session.id, { ...session.data, attached: false });
+    await this.sessionCoordinator.detachActiveSessions();
   }
 
   private handleNotification(event: any) {
@@ -94,8 +91,8 @@ export class TaskOrchestratorService implements OnModuleInit {
         'Execution requires an explicitly approved plan; blocked tasks and legacy completed refusals may be retried',
       );
     const availableProfiles = new Set((await this.profiles.list()).map((profile) => profile.role));
-    const steps = this.normalizeSteps(task.data.approvedPlan.steps, availableProfiles);
-    this.validateGraph(steps);
+    const steps = this.approvedPlanExecution.normalizeSteps(task.data.approvedPlan.steps, availableProfiles);
+    this.approvedPlanExecution.validateGraph(steps);
     const previous = (await this.records.list('subtask', task.projectId || undefined))
       .filter((row: any) => row.data.taskId === taskId)
       .sort(
@@ -187,6 +184,8 @@ export class TaskOrchestratorService implements OnModuleInit {
     if (!task.data.approvedPlan.steps?.some((step: any) => step.id === subtask.data.id))
       throw new BadRequestException('The subtask does not match a step in the approved plan');
     const normalizedEvidence = evidence.map((item) => item.trim()).filter(Boolean);
+    if (normalizedEvidence.some((item) => item.length > 2000))
+      throw new BadRequestException('Each evidence item must be at most 2,000 characters');
     if (!normalizedEvidence.length) throw new BadRequestException('At least one verified result or check is required');
 
     const reconciled = await this.records.update(subtaskId, {
@@ -195,7 +194,7 @@ export class TaskOrchestratorService implements OnModuleInit {
       outcomeStatus: 'completed',
       retryable: false,
       completionEvidence: { source: 'user-confirmed-external-verification', evidence: normalizedEvidence },
-      result: `${result.trim()}\n\nVerified externally:\n${normalizedEvidence.map((item) => `- ${item}`).join('\n')}\n\nAGENTPIER_RESULT: completed`,
+      result: `${result.trim()}\n\nVerified externally:\n${normalizedEvidence.map((item) => `- ${item}`).join('\n')}`,
       error: null,
       finishedAt: new Date().toISOString(),
     });
@@ -233,7 +232,7 @@ export class TaskOrchestratorService implements OnModuleInit {
         try {
           await this.codex.resumeThread(session.data.threadId);
           session.data = { ...session.data, attached: true };
-          await this.records.update(session.id, session.data);
+          await this.sessionCoordinator.updateSession(session.id, session.data);
         } catch (error) {
           session.data = { ...session.data, reconnectReason: this.errorMessage(error) };
         }
@@ -290,7 +289,7 @@ export class TaskOrchestratorService implements OnModuleInit {
         answeredAt: new Date().toISOString(),
         answers: Object.keys(answers),
       });
-      await this.records.update(session.id, { ...session.data, status: 'running' });
+      await this.sessionCoordinator.updateSession(session.id, { ...session.data, status: 'running' });
       return { sent: true, questionMessageId: question.id };
     }
     if (!input.message?.trim()) throw new BadRequestException('Message text is required');
@@ -310,10 +309,9 @@ export class TaskOrchestratorService implements OnModuleInit {
         effectiveModel: runtime.model,
         effectiveReasoningEffort: runtime.effort,
       };
-      await this.records.update(session.id, session.data);
+      await this.sessionCoordinator.updateSession(session.id, session.data);
     }
-    const message = await this.records.create(
-      'agent-message',
+    const message = await this.sessionCoordinator.createMessage(
       {
         taskId: input.taskId,
         sessionId: session.id,
@@ -340,7 +338,7 @@ export class TaskOrchestratorService implements OnModuleInit {
           /* cancellation remains recorded */
         }
       }
-      await this.records.update(session.id, {
+      await this.sessionCoordinator.updateSession(session.id, {
         ...session.data,
         status: 'cancelled',
         cancelledAt: new Date().toISOString(),
@@ -415,8 +413,7 @@ export class TaskOrchestratorService implements OnModuleInit {
         mode: 'read-only',
         model: runtime.model,
       });
-      const session = await this.records.create(
-        'session',
+      const session = await this.sessionCoordinator.createSession(
         {
           taskId,
           phase: 'analysis',
@@ -442,7 +439,7 @@ export class TaskOrchestratorService implements OnModuleInit {
       );
       sessions.push(session);
       if ((await this.requireTask(taskId)).data.status === 'cancelled') {
-        await this.records.update(session.id, { ...session.data, status: 'cancelled' });
+        await this.sessionCoordinator.updateSession(session.id, { ...session.data, status: 'cancelled' });
         return;
       }
       const prompt = `Perform a read-only architecture analysis for the user's request below. Do not edit files, switch branches, create files, or change configuration. Read the local AGENTS.md instructions and analyze relevant architecture, API contracts, dependencies, runtime, adjacent components, tests and risks. Return a concise findings report, relevant paths, questions, and implementation constraints.\n\nOriginal user request (verbatim):\n${request}\n\nApplication: ${app.data.name || app.name}\nPurpose: ${app.data.purpose || ''}`;
@@ -453,7 +450,7 @@ export class TaskOrchestratorService implements OnModuleInit {
         mode: 'read-only',
         ...runtime,
       });
-      await this.records.update(session.id, { ...session.data, turnId: turn.turnId });
+      await this.sessionCoordinator.updateSession(session.id, { ...session.data, turnId: turn.turnId });
       await this.records.updateTask(taskId, {
         sessionIds: sessions.map((item) => item.id),
         status: 'analysis_running',
@@ -462,57 +459,18 @@ export class TaskOrchestratorService implements OnModuleInit {
     await this.records.updateTask(taskId, { sessionIds: sessions.map((item) => item.id), status: 'analysis_running' });
   }
 
-  private async executeGraph(taskId: string, steps: Step[], records: any[]) {
-    const projectId = (await this.requireTask(taskId)).projectId!;
-    const completedRecords = new Map(
-      records.filter((item) => this.isReusableSuccess(item)).map((item) => [item.data.id, item]),
-    );
-    const pending = new Map(steps.filter((step) => !completedRecords.has(step.id)).map((step) => [step.id, step]));
-    const completed = new Map([...completedRecords].map(([id, item]) => [id, String(item.data.result || '')]));
-    const running = new Map<string, Promise<void>>();
-    let waitingForActivePath = false;
-    while (pending.size || running.size) {
-      if ((await this.requireTask(taskId)).data.status === 'cancelled') return;
-      waitingForActivePath = false;
-      const ready = [...pending.values()].filter((step) => (step.dependsOn || []).every((id) => completed.has(id)));
-      for (const step of ready) {
-        if (running.size >= 3) break;
-        const subtask = records.find((item) => item.data.id === step.id || item.data.title === step.title);
-        const path = await this.stepRepoPath(projectId, step);
-        if ([...this.activeWritePaths].some((activePath) => this.pathsOverlap(activePath, path))) {
-          waitingForActivePath = true;
-          continue;
-        }
-        await this.assertNoActivePathSessions(projectId, path, taskId, subtask?.id);
-        pending.delete(step.id);
-        this.activeWritePaths.add(path);
-        const promise = this.executeStep(
-          taskId,
-          projectId,
-          step,
-          subtask,
-          path,
-          Object.fromEntries((step.dependsOn || []).map((id) => [id, completed.get(id)!])),
-        )
-          .then((result) => {
-            completed.set(step.id, result);
-          })
-          .finally(() => {
-            this.activeWritePaths.delete(path);
-            running.delete(step.id);
-          });
-        running.set(step.id, promise);
-      }
-      if (!running.size && pending.size) {
-        if (waitingForActivePath)
-          throw new BadRequestException('A plan step overlaps another active managed session; retry after it finishes');
-        throw new BadRequestException('Plan dependencies contain a cycle or refer to unknown steps');
-      }
-      if (running.size) await Promise.race(running.values());
-    }
-    if ((await this.requireTask(taskId)).data.status === 'cancelled') return;
-    await this.records.updateTask(taskId, { status: 'review_ready', completedAt: new Date().toISOString() });
-    await this.backups.createBackup('milestone');
+  private async executeGraph(taskId: string, steps: Step[], subtasks: any[]) {
+    return this.approvedPlanExecution.executeGraph(taskId, steps, subtasks, {
+      requireTask: (id) => this.requireTask(id),
+      stepRepoPath: (projectId, step) => this.stepRepoPath(projectId, step),
+      assertNoActivePathSessions: (projectId, path, id, subtaskId) =>
+        this.assertNoActivePathSessions(projectId, path, id, subtaskId),
+      isReusableSuccess: (subtask) => this.isReusableSuccess(subtask),
+      executeStep: (id, projectId, step, subtask, path, dependencies) =>
+        this.executeStep(id, projectId, step, subtask, path, dependencies),
+      updateTask: (id, data) => this.records.updateTask(id, data),
+      createBackup: (kind) => this.backups.createBackup(kind),
+    });
   }
 
   private async executeStep(
@@ -592,6 +550,7 @@ export class TaskOrchestratorService implements OnModuleInit {
       this.contextText(context),
       `Managed execution context (already persisted and approved):\n${managedContext}`,
       `Only implement approved step "${step.title}" on the explicitly approved target branch ${branch}. Do not create or switch branches. Preserve pre-existing uncommitted changes: ${porcelain || '(clean)'}. ${releaseHandoff}`,
+      'The orchestrator will not edit project files. If execution cannot proceed, report blocked; do not substitute an executor. Choose implementation details and verification order only within this approved scope; preserve read-only and release constraints.',
       'This managed step is already part of a persisted, user-approved plan. Do not call AgentPier MCP tools such as execute_task or get_task_status, and do not ask the user to repeat either ID or the plan approval. Work directly in the supplied application directory and run the local checks listed in the task.',
       dockerSocketPath
         ? `This approved step has local Docker capability through the configured Unix socket ${dockerSocketPath}. Use the repository Compose files and preserve existing volumes; never run destructive volume removal unless the approved step explicitly requires it.`
@@ -641,14 +600,14 @@ export class TaskOrchestratorService implements OnModuleInit {
       threadId: started.threadId,
     });
     if ((await this.requireTask(taskId)).data.status === 'cancelled') {
-      await this.records.update(session.id, { ...session.data, status: 'cancelled' });
+      await this.sessionCoordinator.updateSession(session.id, { ...session.data, status: 'cancelled' });
       await this.records.update(subtask.id, { ...subtask.data, status: 'cancelled' });
       return 'Task cancelled';
     }
     const dependencyText = (step.dependsOn || [])
       .map(
         (key) =>
-          `\nDependency contract:\n${JSON.stringify({ stepId: key, status: 'completed', summary: this.redact(dependencies[key] || '').slice(0, 4000), truncated: (dependencies[key] || '').length > 4000 })}`,
+          `\nDependency contract:\n${JSON.stringify({ stepId: key, status: 'completed', summary: this.redact(dependencies[key] || '').slice(0, 3500), truncated: (dependencies[key] || '').length > 3500 })}`,
       )
       .join('\n');
     const prompt = `Implement this approved task step.\n\nTask: ${step.title}\n\nApproved scope:\n${step.description}\n\nRequired checks:\n${(step.checks || []).join('\n')}\n\nCurrent API/contract and completed dependency results:\n${dependencyText || '(No dependencies)'}\n\nFollow local project instructions. Run relevant checks, update changelog/API documentation when the approved plan asks. Leave changes in the local working tree for user review. Do not call AgentPier MCP execute_task or get_task_status; this subtask is already running under its approved parent plan. Finish with exactly one line: AGENTPIER_RESULT: completed, AGENTPIER_RESULT: partial, or AGENTPIER_RESULT: blocked. Use completed only when the assigned scope and required checks are complete; use partial or blocked for refusals, permission failures, or incomplete work.`;
@@ -662,18 +621,18 @@ export class TaskOrchestratorService implements OnModuleInit {
       ...runtime,
     });
     session.data = { ...session.data, turnId: turn.turnId };
-    await this.records.update(session.id, session.data);
+    await this.sessionCoordinator.updateSession(session.id, session.data);
     if ((await this.requireTask(taskId)).data.status === 'cancelled') {
       try {
         await this.codex.interrupt(started.threadId, turn.turnId);
       } catch {
         /* cancellation is already recorded */
       }
-      await this.records.update(session.id, { ...session.data, status: 'cancelled' });
+      await this.sessionCoordinator.updateSession(session.id, { ...session.data, status: 'cancelled' });
       await this.records.update(subtask.id, { ...subtask.data, status: 'cancelled' });
       return 'Task cancelled';
     }
-    const terminal = await this.waitForTurn(started.threadId, turn.turnId, 60 * 60 * 1000);
+    const terminal = await this.sessionCoordinator.waitForTurn(started.threadId, turn.turnId, 60 * 60 * 1000);
     if (terminal.turn?.status !== 'completed')
       throw new Error(`Codex execution ${terminal.turn?.status || 'failed'} for ${step.title}`);
     const result = this.extractText(terminal.turn);
@@ -683,7 +642,7 @@ export class TaskOrchestratorService implements OnModuleInit {
         ? `Agent reported ${outcomeStatus} instead of completing the approved step`
         : 'Agent did not provide the required AGENTPIER_RESULT completion status';
       const latestSession: any = await this.records.get(session.id);
-      await this.records.update(session.id, {
+      await this.sessionCoordinator.updateSession(session.id, {
         ...latestSession.data,
         status: 'blocked',
         turnStatus: terminal.turn.status,
@@ -719,99 +678,8 @@ export class TaskOrchestratorService implements OnModuleInit {
   }
 
   private async handleCodexEvent(event: any) {
-    const method = event.method;
-    const rawParams = event.params || {};
-    const params = this.redact(rawParams);
-    const sessions = await this.records.list('session');
-    const session = sessions.find((row) => row.data.threadId === params.threadId);
-    if (!session) return;
-    try {
-      await this.records.create(
-        'agent-event',
-        {
-          taskId: session.data.taskId,
-          sessionId: session.id,
-          threadId: params.threadId,
-          method,
-          params,
-          receivedAt: new Date().toISOString(),
-        },
-        session.projectId || undefined,
-      );
-    } catch {
-      // A failed journal write must not prevent safe lifecycle processing.
-      this.logger.warn('Failed to persist a Codex app-server event');
-    }
-    if (method === 'item/tool/requestUserInput') {
-      await this.records.create(
-        'agent-message',
-        {
-          taskId: session.data.taskId,
-          sessionId: session.id,
-          threadId: params.threadId,
-          serverRequestId: event.id,
-          direction: 'agent_to_user',
-          kind: 'question',
-          questions: this.redact(rawParams.questions),
-          status: 'pending',
-          createdAt: new Date().toISOString(),
-        },
-        session.projectId || undefined,
-      );
-      session.data = { ...session.data, status: 'waiting_for_user' };
-      await this.records.update(session.id, session.data);
-      return;
-    }
-    if (method === 'item/agentMessage/delta') {
-      await this.records.create(
-        'agent-message',
-        {
-          taskId: session.data.taskId,
-          sessionId: session.id,
-          threadId: params.threadId,
-          direction: 'agent_to_user',
-          kind: 'delta',
-          text: this.redact(rawParams.delta),
-          status: 'streaming',
-          createdAt: new Date().toISOString(),
-        },
-        session.projectId || undefined,
-      );
-      return;
-    }
-    if (method === 'turn/completed' || method === 'turn/error') {
-      const turn = params.turn || params;
-      const turnId = turn?.id || params.turnId || session.data.turnId;
-      const status =
-        method === 'turn/error'
-          ? 'failed'
-          : turn?.status === 'completed'
-            ? 'completed'
-            : turn?.status === 'interrupted'
-              ? 'cancelled'
-              : 'failed';
-      session.data = {
-        ...session.data,
-        status,
-        result: this.redact(this.extractText(turn)),
-        completedAt: new Date().toISOString(),
-        error: this.redact(turn?.error) || null,
-      };
-      await this.records.update(session.id, session.data);
-      const safeTurn = {
-        ...turn,
-        id: turnId,
-        status,
-        error: this.redact(turn?.error),
-        items: this.redact(turn?.items),
-      };
-      if (turnId) {
-        this.terminalTurns.set(turnId, { turn: safeTurn });
-        for (const resolve of this.waiters.get(turnId) || []) resolve({ turn: safeTurn });
-        this.waiters.delete(turnId);
-      }
-      if (session.data.phase === 'analysis') await this.maybeCompleteAnalysis(session.data.taskId);
-    }
+    const completed = await this.sessionCoordinator.handleEvent(event);
+    if (completed?.session.data.phase === 'analysis') await this.maybeCompleteAnalysis(completed.session.data.taskId);
   }
 
   private async maybeCompleteAnalysis(taskId: string) {
@@ -838,98 +706,26 @@ export class TaskOrchestratorService implements OnModuleInit {
     }
   }
 
-  private async waitForTurn(threadId: string, turnId: string, timeoutMs: number) {
-    const known = this.terminalTurns.get(turnId);
-    if (known) return known;
-    return new Promise<any>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error(`Codex turn timed out after ${timeoutMs}ms`)), timeoutMs);
-      const complete = (event: any) => {
-        clearTimeout(timer);
-        resolve(event);
-      };
-      const list = this.waiters.get(turnId) || [];
-      list.push(complete);
-      this.waiters.set(turnId, list);
-    });
-  }
-
-  private normalizeSteps(value: unknown, availableProfiles: Set<string>): Step[] {
-    if (!Array.isArray(value) || !value.length)
-      throw new BadRequestException('The approved plan must contain a non-empty steps array');
-    return value.map((raw, index) => {
-      if (!raw || typeof raw !== 'object' || typeof raw.title !== 'string' || typeof raw.description !== 'string')
-        throw new BadRequestException(`Plan step ${index + 1} needs title and description`);
-      if (raw.releaseOperations !== undefined && !validReleaseOperations(raw.releaseOperations))
-        throw new BadRequestException('Invalid approved releaseOperations scope');
-      if (
-        raw.executionCapabilities !== undefined &&
-        (!Array.isArray(raw.executionCapabilities) ||
-          raw.executionCapabilities.some((capability: unknown) => capability !== 'docker') ||
-          new Set(raw.executionCapabilities).size !== raw.executionCapabilities.length)
-      )
-        throw new BadRequestException('executionCapabilities may only contain the unique capability "docker"');
-      if (raw.workingDirectory !== undefined && !['application', 'repository'].includes(raw.workingDirectory))
-        throw new BadRequestException('workingDirectory must be application or repository');
-      const dockerComposeCheck =
-        Array.isArray(raw.checks) &&
-        raw.checks.some((check: unknown) => typeof check === 'string' && /^\s*docker\s+compose\b/i.test(check));
-      const executionCapabilities = [...(raw.executionCapabilities || [])] as Array<'docker'>;
-      if (dockerComposeCheck && !executionCapabilities.includes('docker')) executionCapabilities.push('docker');
-      const role = this.canonicalProfile(raw.profile || 'backend-nestjs');
-      if (!availableProfiles.has(role)) throw new BadRequestException(`Unknown agent profile: ${role}`);
-      if (!this.isSafeTargetBranch(raw.targetBranch))
-        throw new BadRequestException(
-          `Plan step ${index + 1} requires an explicit targetBranch. Ask the user which branch to use and wait before execution; never choose or create one automatically.`,
-        );
-      return {
-        ...raw,
-        id: raw.id || `step-${index + 1}`,
-        profile: role,
-        dependsOn: raw.dependsOn || [],
-        executionCapabilities,
-        workingDirectory: raw.workingDirectory || (dockerComposeCheck ? 'repository' : undefined),
-      } as Step;
-    });
-  }
-
-  private isSafeTargetBranch(value: unknown) {
-    return (
-      typeof value === 'string' &&
-      /^[A-Za-z0-9][A-Za-z0-9._/-]{0,119}$/.test(value) &&
-      !value.includes('..') &&
-      !value.includes('//') &&
-      !value.endsWith('/') &&
-      !value.endsWith('.') &&
-      !value.includes('@{')
-    );
-  }
-
-  private validateGraph(steps: Step[]) {
-    const ids = new Set(steps.map((step) => step.id));
-    if (ids.size !== steps.length) throw new BadRequestException('Plan step IDs must be unique');
-    for (const step of steps)
-      for (const dep of step.dependsOn || [])
-        if (!ids.has(dep) || dep === step.id) throw new BadRequestException(`Invalid dependency ${dep} in ${step.id}`);
-  }
-
   private async stepRepoPath(projectId: string, step: Step) {
     const hasDockerComposeCheck = (step.checks || []).some((check) => /^\s*docker\s+compose\b/i.test(check));
     if (step.workingDirectory === 'repository' && !step.repositoryId)
       throw new BadRequestException(`Step ${step.id} selects the repository root but has no repositoryId`);
     if (step.workingDirectory === 'application' && !step.appId)
       throw new BadRequestException(`Step ${step.id} selects an application directory but has no appId`);
+    const repository = step.repositoryId ? await this.records.get(step.repositoryId) : null;
+    const application = step.appId ? await this.records.get(step.appId) : null;
+    if (
+      (step.repositoryId && (!repository || repository.kind !== 'repository' || repository.projectId !== projectId)) ||
+      (step.appId && (!application || application.kind !== 'app' || application.projectId !== projectId))
+    )
+      throw new BadRequestException(
+        `Step ${step.id} must reference a registered application or repository in this project`,
+      );
     const useRepository =
       Boolean(step.repositoryId) &&
       (step.workingDirectory === 'repository' || (step.workingDirectory !== 'application' && hasDockerComposeCheck));
-    const row = useRepository
-      ? await this.records.get(step.repositoryId!)
-      : step.appId
-        ? await this.records.get(step.appId)
-        : step.repositoryId
-          ? await this.records.get(step.repositoryId)
-          : null;
-    if (!row || !['app', 'repository'].includes(row.kind) || row.projectId !== projectId)
-      throw new BadRequestException(`Step ${step.id} must reference a registered application or repository`);
+    const row = useRepository ? repository : application || repository;
+    if (!row) throw new BadRequestException(`Step ${step.id} must reference a registered application or repository`);
     return row.data.path as string;
   }
 
@@ -956,7 +752,9 @@ export class TaskOrchestratorService implements OnModuleInit {
       if (
         session.kind !== 'session' ||
         session.data.taskId !== taskId ||
-        session.data.status !== 'completed' ||
+        !['completed', 'blocked'].includes(session.data.status) ||
+        session.data.turnStatus !== 'completed' ||
+        session.data.subtaskId !== subtask.id ||
         !session.data.threadId ||
         session.data.cwd !== subtask.data.path
       )
@@ -988,8 +786,7 @@ export class TaskOrchestratorService implements OnModuleInit {
         'Inspect the existing report and current working tree read-only. If the report records approved checks run locally outside this session, count those as evidence and do not repeat them. Separate tool/session failures from product failures. State completed checks and any environment limitation. Do not commit, push, create a PR, or merge.',
         'If the approved work is complete and its checks are supported by the report/current files, finish with exactly: AGENTPIER_RESULT: completed. If material work or required evidence is missing, explain it and finish with AGENTPIER_RESULT: partial or AGENTPIER_RESULT: blocked.',
       ].join('\n\n');
-      const finalizationSession: any = await this.records.create(
-        'session',
+      const finalizationSession: any = await this.sessionCoordinator.createSession(
         {
           taskId,
           subtaskId: subtask.id,
@@ -1021,7 +818,7 @@ export class TaskOrchestratorService implements OnModuleInit {
       finalizationSession.data = { ...finalizationSession.data, turnId: turn.turnId };
       await this.records.update(finalizationSession.id, finalizationSession.data);
       await this.records.update(subtask.id, { ...subtask.data, status: 'running', finalizationOnly: true });
-      const terminal = await this.waitForTurn(started.threadId, turn.turnId, 20 * 60 * 1000);
+      const terminal = await this.sessionCoordinator.waitForTurn(started.threadId, turn.turnId, 20 * 60 * 1000);
       const result = this.extractText(terminal.turn);
       const outcomeStatus = terminal.turn?.status === 'completed' ? this.agentResultStatus(result) : null;
       const completed = outcomeStatus === 'completed';
@@ -1068,16 +865,6 @@ export class TaskOrchestratorService implements OnModuleInit {
     return Boolean(result.trim()) && !this.isRefusalResult(result);
   }
 
-  private pathsOverlap(left: string, right: string) {
-    const a = resolve(left);
-    const b = resolve(right);
-    const aToB = relative(a, b);
-    const bToA = relative(b, a);
-    const inside = (path: string) =>
-      path === '' || (path !== '..' && !path.startsWith(`..${sep}`) && !isAbsolute(path));
-    return inside(aToB) || inside(bToA);
-  }
-
   private async assertNoActiveTaskSessions(taskId: string, projectId?: string) {
     const sessions = await this.sessionRecords.forTask(taskId, projectId);
     const active = sessions.filter((session) => ['running', 'waiting_for_user'].includes(session.data.status));
@@ -1085,6 +872,10 @@ export class TaskOrchestratorService implements OnModuleInit {
       throw new BadRequestException(
         'Cannot retry while prior task sessions are still active; stop or resolve them first',
       );
+  }
+
+  private pathsOverlap(left: string, right: string) {
+    return this.approvedPlanExecution.pathsOverlap(left, right);
   }
 
   private async assertNoActivePathSessions(projectId: string, path: string, taskId: string, subtaskId?: string) {
@@ -1181,7 +972,7 @@ export class TaskOrchestratorService implements OnModuleInit {
             /* the saved error remains available if the session already stopped */
           }
         }
-        await this.records.update(session.id, { ...session.data, status: 'failed', error: reason });
+        await this.sessionCoordinator.updateSession(session.id, { ...session.data, status: 'failed', error: reason });
       }
       for (const subtask of subtasks.filter(
         (row) => row.data.taskId === taskId && ['queued', 'running'].includes(row.data.status),

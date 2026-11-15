@@ -4,6 +4,6 @@ export class CompleteTaskFromEvidenceDto {
   @IsUUID() taskId!: string;
   @IsUUID() subtaskId!: string;
   @IsString() @IsNotEmpty() @MaxLength(20000) result!: string;
-  @IsArray() @ArrayMinSize(1) @IsString({ each: true }) evidence!: string[];
+  @IsArray() @ArrayMinSize(1) @IsString({ each: true }) @MaxLength(2000, { each: true }) evidence!: string[];
   @Equals(true) userConfirmed!: boolean;
 }
