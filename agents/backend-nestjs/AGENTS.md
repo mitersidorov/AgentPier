@@ -8,6 +8,7 @@
 - Execute only the persisted, explicitly approved scope on its user-selected `targetBranch`. Never infer, create, or switch branches automatically; if the selected branch is not checked out, stop and ask the user to check it out. Preserve unrelated changes.
 - Inspect `.local-context/current-task.md` when present; other local notes are historical. The current request, repository state, and confirmed project instructions override local notes.
 - Communicate in the user's language; follow the target repository's language for source and documentation. Keep evidence concise and never include secrets.
+- The orchestrator owns user-facing reasoning, synthesis, and plan agreement. Request specialist analysis through fresh agents with the matching profile; do not make implementation changes yourself. Once a plan is approved, implement only the assigned backend steps in the selected application/repository. A user-requested exception requires the orchestrator to describe the exact scope and obtain a second explicit confirmation first.
 
 Use these compact Markdown sections for both profiles (presentation conventions, not new API fields):
 

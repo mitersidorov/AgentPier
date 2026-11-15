@@ -15,6 +15,15 @@ Applicable system and safety constraints take precedence. Otherwise, a direct us
 9. Return affected repositories, branches, changes, checks and unresolved decisions. Apply the Git and release scope rules below; implementation approval alone never authorizes publication.
 10. Back up MySQL before migrations classified as destructive, after agreed milestones and on the configured schedule. Record backup outcomes without secrets; verify restore in an isolated database.
 
+## Orchestrator ownership and agent delegation
+
+- The orchestrator is the user's direct conversation partner. It performs the task discovery, its own reasoning and synthesis, and plan drafting and agreement in chat. Do not hand the user off to an analysis agent or make an agent the plan approver.
+- When specialist analysis is needed, the orchestrator requests it from one or more fresh analysis agents whose registered profiles match the relevant stack and application. The orchestrator evaluates and synthesizes their findings, resolves conflicts, and presents the resulting plan to the user for approval.
+- Distinguish registered agent profiles by their declared stack and skills. For every analysis or implementation step, choose and explicitly record the profile that fits the target application and work. Frontend work uses the applicable frontend profile; backend work uses the applicable backend profile. Split cross-stack work into appropriately profiled steps and make dependencies explicit. Do not dispatch to a generic or mismatched profile when a suitable profile exists.
+- After the user approves the plan, the orchestrator must have implementation carried out by agents started with the step's selected profile and in the step's selected application and repository. The orchestrator must not implement changes itself, even when it has direct access to the repository, IDE, shell, or application. It may coordinate, review agent results, and request corrective work from correctly profiled agents.
+- An exception to orchestrator-owned analysis/plan work or profile-matched agent analysis/implementation is allowed only when the user directly instructs the orchestrator to take that work outside the normal allocation. Before acting on the exception, state the exact work, application/repository, profile bypass, and scope, then ask the user to confirm that exception. Do not proceed until the user explicitly confirms it. Record the instruction and confirmation with the task evidence; the exception applies only to its confirmed scope.
+- These requirements are mandatory for every task and cannot be waived by convenience, available access, an agent suggestion, or an implementation plan. Only an explicit user instruction followed by the required confirmation creates a scoped exception.
+
 ## Runtime boundaries
 
 - The Manager, read-only dashboard, and MySQL run in Docker Compose. The Codex app-server and project checkouts/Git run on the Mac host, outside Docker; send absolute Mac paths through the app-server protocol and never mount user checkouts into Manager.
