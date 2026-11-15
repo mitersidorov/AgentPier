@@ -346,6 +346,146 @@ describe('TaskOrchestratorService branch policy', () => {
     },
   );
 
+  it('continues a completed blocked turn in read-only mode to collect its missing final marker', async () => {
+    const task = { id: 'task-1', kind: 'task', projectId: 'project-1', data: { error: 'missing completion marker' } };
+    const subtask = {
+      id: 'subtask-1',
+      kind: 'subtask',
+      data: {
+        id: 'frontend-russian-localization',
+        taskId: task.id,
+        status: 'blocked',
+        error: 'Agent did not provide the required AGENTPIER_RESULT completion status',
+        sessionId: 'session-1',
+        path: '/repo/apps/webapp',
+        branch: 'dev/pregnantbot-implementation',
+        result:
+          'Implemented localization. See reports/frontend-russian-localization.md; typecheck, Docker build, and 8 E2E tests passed.',
+      },
+    };
+    const session = {
+      id: 'session-1',
+      kind: 'session',
+      data: {
+        taskId: task.id,
+        subtaskId: subtask.id,
+        status: 'completed',
+        threadId: 'thread-1',
+        cwd: subtask.data.path,
+        effectiveModel: 'frontend-model',
+        effectiveReasoningEffort: 'medium',
+      },
+    };
+    const records = {
+      get: jest.fn(async (id: string) => (id === task.id ? task : session)),
+      create: jest.fn().mockResolvedValue({ id: 'final-session', data: {} }),
+      update: jest.fn(async (id: string, data: any) => ({ id, kind: 'session', data })),
+    };
+    const codex = {
+      startThread: jest.fn().mockResolvedValue({ threadId: 'final-thread', sessionId: 'codex-final-session' }),
+      startTurn: jest.fn().mockResolvedValue({ turnId: 'final-turn' }),
+    };
+    const profiles = {
+      resolveRuntime: jest.fn().mockResolvedValue({ model: 'frontend-model', effort: 'medium' }),
+      load: jest.fn().mockResolvedValue({ profile: 'Frontend profile', skills: [] }),
+    };
+    const service = new TaskOrchestratorService(records as any, profiles as any, codex as any, {} as any, {} as any);
+    (service as any).terminalTurns.set('final-turn', {
+      turn: {
+        status: 'completed',
+        items: [
+          {
+            type: 'agentMessage',
+            text: 'Verified existing report: typecheck and production build passed; Playwright E2E: 8 passed. Browser SIGTRAP was isolated to the agent session.\nAGENTPIER_RESULT: completed',
+          },
+        ],
+      },
+    });
+    const latest = new Map([[subtask.data.id, subtask]]);
+
+    await (service as any).finalizeMissingMarker(
+      task.id,
+      [
+        {
+          id: subtask.data.id,
+          title: 'Localize frontend',
+          description: 'Preserve current changes and verify the report',
+          profile: 'frontend-angular',
+          targetBranch: subtask.data.branch,
+          appId: 'app-1',
+        },
+      ],
+      latest,
+    );
+
+    expect(codex.startThread).toHaveBeenCalledWith(
+      expect.objectContaining({ mode: 'read-only', cwd: subtask.data.path }),
+    );
+    expect(codex.startTurn).toHaveBeenCalledWith(
+      expect.objectContaining({ threadId: 'final-thread', cwd: subtask.data.path, mode: 'read-only' }),
+    );
+    const prompt = codex.startTurn.mock.calls[0][0].prompt;
+    expect(prompt).toContain('Do not repeat implementation');
+    expect(prompt).toContain('do not repeat them');
+    expect(prompt).toContain('Do not commit, push');
+    expect(latest.get(subtask.data.id).data).toMatchObject({
+      status: 'completed',
+      outcomeStatus: 'completed',
+      retryable: false,
+      completionEvidence: 'agent-finalization-report',
+    });
+  });
+
+  it('reconciles user-confirmed external checks without pretending the cancelled agent session completed', async () => {
+    const task = {
+      id: 'task-1',
+      kind: 'task',
+      projectId: 'project-1',
+      data: {
+        status: 'cancelled',
+        approvedPlan: { steps: [{ id: 'frontend-step' }] },
+        subtaskIds: ['subtask-1'],
+      },
+    };
+    const subtask = {
+      id: 'subtask-1',
+      kind: 'subtask',
+      projectId: 'project-1',
+      data: { taskId: task.id, id: 'frontend-step', status: 'cancelled', attempt: 1 },
+    };
+    const records = {
+      get: jest.fn(async (id: string) => (id === task.id ? task : subtask)),
+      list: jest.fn().mockResolvedValue([subtask]),
+      update: jest.fn(async (_id: string, data: any) => ({ ...subtask, data })),
+      updateTask: jest.fn(async (_id: string, data: any) => ({ ...task, data: { ...task.data, ...data } })),
+    };
+    const sessions = { forTask: jest.fn().mockResolvedValue([{ data: { status: 'cancelled' } }]) };
+    const service = new TaskOrchestratorService(records as any, {} as any, {} as any, {} as any, sessions as any);
+
+    const result = await service.completeFromEvidence(
+      task.id,
+      subtask.id,
+      'Russian localization is already present in the existing working tree.',
+      ['npm run typecheck passed', 'Production Docker build passed', 'Full Playwright E2E passed: 8 tests'],
+      true,
+    );
+
+    expect(records.update).toHaveBeenCalledWith(
+      subtask.id,
+      expect.objectContaining({
+        status: 'completed',
+        outcomeStatus: 'completed',
+        completionEvidence: expect.objectContaining({ source: 'user-confirmed-external-verification' }),
+        result: expect.stringContaining('AGENTPIER_RESULT: completed'),
+      }),
+    );
+    expect(records.updateTask).toHaveBeenCalledWith(
+      task.id,
+      expect.objectContaining({ status: 'review_ready', subtaskIds: [subtask.id] }),
+    );
+    expect(result.data.status).toBe('review_ready');
+  });
+
   it('uses the registered application directory when a step also names its repository', async () => {
     const records = {
       get: jest

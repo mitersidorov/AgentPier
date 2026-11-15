@@ -29,6 +29,9 @@ export class TaskService {
   execute(taskId: string) {
     return this.orchestration.execute(taskId);
   }
+  completeFromEvidence(taskId: string, subtaskId: string, result: string, evidence: string[], userConfirmed: boolean) {
+    return this.orchestration.completeFromEvidence(taskId, subtaskId, result, evidence, userConfirmed);
+  }
   status(taskId: string) {
     return this.orchestration.status(taskId);
   }
