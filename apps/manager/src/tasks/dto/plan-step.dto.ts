@@ -30,5 +30,6 @@ export class PlanStepDto {
   @IsOptional() @IsArray() @ArrayUnique() @IsString({ each: true }) dependsOn?: string[];
   @IsOptional() @IsArray() @IsString({ each: true }) checks?: string[];
   @IsOptional() @IsArray() @ArrayUnique() @IsIn(['docker'], { each: true }) executionCapabilities?: string[];
-  @IsOptional() @IsIn(['application', 'repository']) workingDirectory?: 'application' | 'repository';
+  @IsIn(['application', 'repository']) workingDirectory!: 'application' | 'repository';
+  @IsOptional() @IsArray() @ArrayUnique() @IsString({ each: true }) skills?: string[];
 }

@@ -21,6 +21,35 @@ export class ManagerService {
     });
   }
 
+  findSessionByThreadId(threadId: string) {
+    return this.records
+      .createQueryBuilder('record')
+      .where('record.kind = :kind', { kind: 'session' })
+      .andWhere("JSON_UNQUOTE(JSON_EXTRACT(record.data, '$.threadId')) = :threadId", { threadId })
+      .getOne();
+  }
+
+  listActiveSessions(limit = 1000) {
+    return this.records
+      .createQueryBuilder('record')
+      .where('record.kind = :kind', { kind: 'session' })
+      .andWhere("JSON_UNQUOTE(JSON_EXTRACT(record.data, '$.status')) IN (:...statuses)", {
+        statuses: ['running', 'waiting_for_user'],
+      })
+      .take(limit)
+      .getMany();
+  }
+
+  listTaskSessions(taskId: string, projectId?: string, limit = 500, phase?: string) {
+    const query = this.records
+      .createQueryBuilder('record')
+      .where('record.kind = :kind', { kind: 'session' })
+      .andWhere("JSON_UNQUOTE(JSON_EXTRACT(record.data, '$.taskId')) = :taskId", { taskId });
+    if (projectId) query.andWhere('record.projectId = :projectId', { projectId });
+    if (phase) query.andWhere("JSON_UNQUOTE(JSON_EXTRACT(record.data, '$.phase')) = :phase", { phase });
+    return query.take(limit).getMany();
+  }
+
   async databaseStatus() {
     try {
       await this.records.count();
@@ -160,8 +189,6 @@ export class ManagerService {
       throw new BadRequestException(
         `Specify targetBranch explicitly for every plan step before approval (steps: ${missingBranches.join(', ')}); ask the user and wait for the answer, do not choose a branch automatically`,
       );
-    if (!['analysis_complete', 'plan_draft'].includes(task.data.status))
-      throw new BadRequestException('Analysis must complete before a plan can be approved');
     task.data = { ...task.data, approvedPlan: plan, status: 'approved', approvedAt: new Date().toISOString() };
     return this.records.save(task);
   }
@@ -181,8 +208,6 @@ export class ManagerService {
   async saveDraftPlan(taskId: string, plan: Record<string, any>) {
     const task = await this.get(taskId);
     if (task.kind !== 'task') throw new BadRequestException('taskId must refer to a task');
-    if (task.data.status !== 'analysis_complete')
-      throw new BadRequestException('Analysis must complete before drafting a plan');
     task.data = { ...task.data, draftPlan: plan, status: 'plan_draft', draftUpdatedAt: new Date().toISOString() };
     return this.records.save(task);
   }

@@ -5,8 +5,8 @@ import { ManagerService } from '../../manager/services/manager.service';
 export class SessionService {
   constructor(private readonly records: ManagerService) {}
 
-  async forTask(taskId: string, projectId?: string) {
-    return (await this.records.list('session', projectId)).filter((row) => row.data.taskId === taskId);
+  async forTask(taskId: string, projectId?: string, limit = 500, phase?: string) {
+    return this.records.listTaskSessions(taskId, projectId, limit, phase);
   }
 
   async messagesForTask(taskId: string) {
