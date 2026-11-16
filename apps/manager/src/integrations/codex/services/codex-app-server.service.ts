@@ -208,7 +208,11 @@ export class CodexAppServerService implements OnModuleDestroy {
       approvalPolicy: 'never',
       sandboxPolicy,
     });
-    return { turnId: turnResponse.turn.id };
+    const turn = turnResponse.turn;
+    return {
+      turnId: turn.id,
+      ...(typeof turn.status === 'string' ? { status: turn.status, turn } : {}),
+    };
   }
 
   async localDockerSocketPath(cwd: string) {

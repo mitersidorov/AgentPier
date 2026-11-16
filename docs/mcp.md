@@ -1,106 +1,85 @@
 # Local MCP setup
 
-AgentPier exposes Streamable HTTP MCP directly from the Manager container at:
+AgentPier exposes Streamable HTTP MCP from Manager at:
 
 ```text
 http://localhost:3100/mcp
 ```
 
-In Codex CLI, register the local endpoint with:
+Register it with Codex CLI:
 
 ```sh
 codex mcp add agentpier --url http://localhost:3100/mcp
 codex mcp list
 ```
 
-The exact registration was checked against the installed Codex CLI's `codex mcp add --help`. This connects directly to Manager on the Mac. The dashboard runs on port 3101 and is not in this path.
+Manager is the MCP endpoint. The static dashboard on port 3101 is read-only and does not proxy MCP requests.
 
-## Tools
+## LLM-directed workflow
 
-| Tool                     | Required inputs                                                                   | Effect                                                                      |
-| ------------------------ | --------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
-| `manager_status`         | none                                                                              | MySQL, Manager and live app-server status                                   |
-| `list_projects`          | none                                                                              | List projects                                                               |
-| `register_project`       | `name`, absolute Mac `path`                                                       | Create project                                                              |
-| `update_project`         | `projectId`, `data`                                                               | Edit an existing project's name, checkout path, description, instructions, or constraints |
-| `delete_project`         | `projectId`                                                                       | Wait for confirmed turn termination, then delete project records; keeps checkout files     |
-| `manage_applications`    | `action`, `projectId`; `kind`, `data` for register; `recordId`, `data` for update | List, create, or edit project applications and repositories                 |
-| `list_agents`            | none                                                                              | Read available profiles, instruction hashes, and persisted default models   |
-| `list_models`            | none                                                                              | Read the live Codex app-server model catalog                                |
-| `update_agent_profile`   | `role`, optional `model` / `defaultReasoningEffort`                                                                    | Set a built-in profile model and/or supported effort               |
-| `get_project_context`    | `projectId`                                                                       | Read apps, project instructions and confirmed memory                        |
-| `update_project_context` | `projectId`, `kind`, `data`; optional `recordId`, `userConfirmed`                 | Update project instructions or memory with provenance                       |
-| `analyze_task`           | `projectId`, verbatim `request`                                                   | Start new read-only Codex threads for registered apps                       |
-| `get_analysis_results`   | `taskId`                                                                          | Read report, session IDs, messages and status                               |
-| `save_plan`              | `taskId`, `plan`                                                                  | Save or revise a draft after analysis completes                             |
-| `approve_plan`           | `taskId`, final `plan`, `userConfirmed: true`                                     | Persist user-approved plan                                                  |
-| `execute_task`           | `taskId`                                                                          | Start approved steps on already-checked-out user-selected branches; retries only incomplete steps |
-| `complete_task_from_evidence` | `taskId`, `subtaskId`, `result`, `evidence`, `userConfirmed: true` | Record user-confirmed checks already performed outside the managed session without rerunning implementation |
-| `get_task_status`        | `taskId`                                                                          | Task, subtask, thread and reconnect state                                   |
-| `get_agent_messages`     | `taskId`                                                                          | Read agent messages and questions                                           |
-| `send_agent_message`     | `taskId`, `sessionId`, and either `message` or question/answers                   | Reply or provide direction                                                  |
-| `cancel_task`            | `taskId`                                                                          | Interrupt active work and preserve records                                  |
-| `get_task_results`       | `taskId`                                                                          | Results, branches and local diff/status summaries                           |
-| `backup_database`        | optional `verifyRestore`                                                          | Create an S3-compatible backup and optionally restore/verify in the test DB |
-| `get_backup_status`      | none                                                                              | Read backup journal                                                         |
+The conversational LLM is the orchestrator. It chooses whether analysis is useful, which registered app and specialist profile to use, how to divide a plan, which approved step to dispatch next, and how to interpret results. Manager stores records and starts the exact assignment requested by the LLM; it does not route by task/check words, fan out to all apps, schedule dependency graphs, retry work, or choose parent status.
 
-Tools return JSON in an MCP text block. Tool failures return `isError: true` with a concrete explanation. No MCP authentication is required for the local-only loopback listener; do not expose the port to a network.
+1. Call `analyze_task` to create a task record. It does not start a session.
+2. When specialist input is useful, call `dispatch_orchestration_analysis` for each selected application/profile. It starts a fresh read-only session and returns task/session/thread IDs. `get_analysis_results` exposes persisted session results to the orchestrator.
+3. The LLM synthesizes evidence, discusses and publishes a complete plan in chat, and gets explicit user approval. `save_plan` stores a draft; `approve_plan` requires `userConfirmed: true`. Analysis is optional; a plan can be drafted without it.
+4. The LLM records its decision to begin with `execute_task`, then dispatches one chosen approved plan step at a time through `dispatch_orchestration_assignment`. Each dispatch starts a fresh workspace-write session and returns immediately with its task/subtask/session context. The LLM decides what to dispatch next and whether another attempt is warranted.
+5. `get_task_status` and `get_task_results` expose running and completed work. When a worker turn ends, Manager stores its text and local diff/status evidence on the subtask as `awaiting_outcome`; an errored turn is stored as `blocked`. The LLM evaluates that evidence, writes its assignment assessment with `record_assignment_outcome`, and separately chooses and records parent status with `record_orchestration_task_status`.
 
-### Input shapes
+Workers receive persisted task/subtask IDs, exact profile and application, repository and absolute working directory, user-selected branch, approved scope, dependency context and checks. They work directly in the assigned application and do not need to call `execute_task` or `get_task_status` for their parent plan. A completed app-server turn is not by itself an LLM decision that the assignment succeeded. `AGENTPIER_RESULT` is useful worker-report formatting; Manager does not parse that marker to infer task status. Tool/session failures and environment limits are recorded for the LLM to assess, and do not erase independently verified local work.
 
-Tool arguments are validated against the MCP schemas and domain DTOs. Unknown properties are rejected, record IDs must be UUIDs, and nested objects are validated recursively.
+## Orchestration tools
 
-- `update_project.data` accepts only `name`, `path`, `description`, `instructions`, and `constraints`.
-- To edit a project, call `update_project` with its `projectId` and only the fields that changed, for example `{ "projectId": "<project-uuid>", "data": { "description": "Updated description" } }`.
-- `manage_applications` list accepts only `action` and `projectId`. Register requires `kind` and `data` with a non-empty `name` and absolute `path`. For `kind: "app"`, data supports `name`, `purpose`, `description`, `path`, and `repositoryId`; for `kind: "repository"`, it supports `name`, `description`, `path`, and `remoteUrl`. Update requires `recordId` and a non-empty `data` object; when `kind` is supplied, the schema restricts data to that record type.
-- To edit an application or repository, call `manage_applications` with `action: "update"`, the owning `projectId`, its `recordId`, and only changed fields in `data`. Supply `kind` when you want the input schema to restrict data to that record type.
-- `delete_project` requires a project UUID. Before starting the deletion transaction, Manager checks active analysis/execution tasks and running/waiting-for-user sessions, including detached sessions. It requests interruption of in-progress turns and polls Codex `thread/read` until each turn is confirmed `completed` or `interrupted` (up to 60 seconds per turn); an interrupt acknowledgement alone is insufficient. Locally cancelled/failed sessions with turn IDs are also verified because local status is not proof of external termination. Missing turn/session identifiers, failed or unknown external state, transport/interruption errors, or timeout abort the cascade: no project-owned records are deleted. Active tasks may remain marked cancelled to stop dependent scheduling, and normal lifecycle events may update retained history. Resolve the external work/state before retrying. Inactive projects with completed sessions need no app-server connection. This does not add database race guards or locks; concurrent new work is not serialized with deletion. After successful verification, it transactionally removes the project and all records whose `projectId` belongs to it, including task history; it never removes files from the local checkout or agent profiles.
-- `update_project_context.data` supports `name`, `title`, `category` (`architecture`, `stack`, or `application`), `content`, `instructions`, `description`, `rationale`, `source`, `status`, `constraints`, `decisions`, and `acceptanceCriteria`.
-- Use `kind: instruction` for project architecture/stack/application guidance. Confirm it with `userConfirmed: true`; confirmed records include provenance, a content version and a SHA-256 hash. Drafts are not injected into managed prompts; changing confirmed content requires reconfirmation.
-- Plan objects require a non-empty `steps` array. Each step requires `title` and `description`; optional fields are `id`, `profile`, `appId`, `repositoryId`, `targetBranch`, `dependsOn`, `checks`, `executionCapabilities`, and `workingDirectory` (`application` or `repository`). Before approving, every executable step must have a user-selected `targetBranch`. If the user has not named one, ask and wait; never infer, create, or switch branches automatically. Execution proceeds only when the named branch is already checked out. Plans can also store `summary`, `decisions`, `constraints`, and `acceptanceCriteria`.
-- `executionCapabilities` currently supports only `docker`. Add it to a plan step only when the approved work needs the local Docker daemon; AgentPier resolves the configured local Unix socket and grants that socket to that step's workspace-write sandbox, with network access unchanged. An existing approved plan with an explicit `docker compose ...` check is recognized as Docker-authorized for backward compatibility. Remote Docker contexts are rejected. Without the capability, the host Docker socket stays outside the step's writable roots.
-- Set `workingDirectory: "repository"` for root-level integration/Compose steps and `workingDirectory: "application"` for app-specific steps. Older approved steps with a root `docker compose ...` check and both `appId` and `repositoryId` run from the repository root.
-- Managed agent prompts include the persisted task/subtask IDs, step, application and repository paths, branch, profile, attempt, and approved runtime capabilities. The child executes its assigned work directly and must not call AgentPier MCP `execute_task` or `get_task_status` for its already-running parent workflow. It must end with `AGENTPIER_RESULT: completed`, `partial`, or `blocked`; only an explicit `completed` result marks the subtask complete. If a completed execution turn omits the marker, retry starts a separate read-only report session with the selected profile: it asks the agent to inspect its existing report and working tree, record completed checks and environment limits, and add the marker without repeating implementation or browser checks or inheriting the old execution prompt. A confirmed tool/session failure is not itself proof that the approved work failed. Explicit partial/blocked results remain retryable. Other retries create new attempts only for incomplete steps and reuse successful completed steps.
-- `complete_task_from_evidence` reconciles a blocked/cancelled subtask only after explicit user confirmation, requires non-empty evidence and no active task sessions, and records the result as externally verified. When all approved steps are completed, the parent becomes `review_ready`; the original execution session's actual status is preserved.
-- Overlapping application/repository working directories are serialized; active managed sessions block overlapping work, so repository-root integration steps cannot overlap active child-application steps.
-- `list_models` reads models directly from app-server `model/list`; `update_agent_profile` accepts only a model ID returned by that live catalog. `list_agents` and `GET /dashboard/agents` include each profile’s persisted `defaultModel`.
-- `approve_plan` requires `userConfirmed: true`. `send_agent_message` accepts either a non-empty `message` or a `questionMessageId` with a non-empty map of text answers.
+| Tool                                | Required arguments                                        | Behavior                                                                                                                                                                                  |
+| ----------------------------------- | --------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `analyze_task`                      | `projectId`, `request`                                    | Create a task record; no app/profile selection or agent dispatch.                                                                                                                         |
+| `dispatch_orchestration_analysis`   | `taskId`, `appId`, `profile`, `workingDirectory`, `focus` | Start one LLM-selected read-only analysis session. Optional: `repositoryId`, `skills`.                                                                                                    |
+| `get_analysis_results`              | `taskId`                                                  | Return persisted analysis sessions and their result text. The response includes at most 500 analysis session records; `sessionsTruncated: true` means at least one additional analysis session exists. |
+| `save_plan`                         | `taskId`, `plan`                                          | Save/replace the LLM's plan draft.                                                                                                                                                        |
+| `approve_plan`                      | `taskId`, `plan`, `userConfirmed: true`                   | Persist the plan after explicit user approval.                                                                                                                                            |
+| `execute_task`                      | `taskId`, `decision`                                      | Persist the LLM's decision to begin; does not select or schedule plan steps.                                                                                                              |
+| `dispatch_orchestration_assignment` | `taskId`, `stepId`, `dependencies`                        | Start the exact approved step selected by the LLM.                                                                                                                                        |
+| `record_assignment_outcome`         | `taskId`, `subtaskId`, `status`, `outcome`, `evidence`    | Persist the LLM's assessment on that assignment only.                                                                                                                                     |
+| `record_orchestration_task_status`  | `taskId`, `status`, `decision`                            | Persist the LLM's separate parent-task status and rationale.                                                                                                                              |
+| `read_orchestration_task`           | `taskId`                                                  | Read persisted plan, analysis and orchestration decisions.                                                                                                                                |
+| `record_orchestration_decision`     | `taskId`, `decision`                                      | Append an LLM decision without starting work.                                                                                                                                             |
 
-## ChatGPT limitation
+`dispatch_orchestration_analysis` requires the LLM to select a registered application, profile, and `workingDirectory` (`application` or `repository`). Its optional `skills` list uses exact names from the selected profile. If omitted, the profile's declared skills are supplied; no task-word matching selects skills or directories.
 
-Dashboard traffic uses the separate read-only presentation container on `localhost:3101`. MCP traffic goes directly to Manager at `localhost:3100/mcp`; the dashboard does not proxy MCP requests. If a supported secure tunnel is configured separately, it forwards ChatGPT requests directly to Manager port 3100.
+Each plan step requires `title`, `description`, and an explicit `workingDirectory` (`application` or `repository`). Set `appId` and/or `repositoryId`, `profile`, `targetBranch`, and any LLM-selected `skills`, dependencies, checks and runtime capabilities. Profile instructions describe their repository-relative source directories. The `checks` list is used only as worker verification guidance; Manager never parses it to choose a directory, app, profile, or workflow.
 
-The local endpoint is not directly reachable from hosted ChatGPT. OpenAI's current ChatGPT custom MCP documentation says ChatGPT connects to remote MCP servers; developer-machine servers need Secure MCP Tunnel. [OpenAI's connection guide](https://help.openai.com/en/articles/12584461-connecting-custom-mcp-servers-in-chatgpt) describes the supported connection options. AgentPier does not create a tunnel or expose a public endpoint. The exact endpoint available to the client is supplied by the user's tunnel and cannot be known from this local checkout. Follow the client's current UI instructions; AgentPier does not claim a GUI flow that has not been verified. A ChatGPT live connection was not claimed or tested.
+The LLM asks the user for a target branch if none is selected. The exact user answer is passed to the worker. If the branch exists locally or remotely but is not checked out, the worker can select that exact branch while preserving existing work. If the exact branch does not exist, ask before creating it. Never substitute a branch.
+
+Manager performs lightweight input/record validation and records session/outcome evidence. It does not block dispatch because another session may share the checkout; the LLM coordinates overlapping work. Assignment outcomes never infer or update parent status. Failed or incomplete assignments must not be recorded as successful.
+
+## Other MCP tools
+
+| Tool                                                                                             | Purpose                                                                                                                  |
+| ------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------ |
+| `manager_status`                                                                                 | Check Manager, MySQL, backup storage and app-server connectivity.                                                        |
+| `list_projects`, `register_project`, `update_project`, `delete_project`                          | Manage project records. Updating project metadata does not alter checkout files.                                         |
+| `manage_applications`                                                                            | List, create or update registered applications and repositories.                                                         |
+| `list_agents`, `list_models`, `update_agent_profile`                                             | Inspect specialist profiles and live models; set a profile's default model/reasoning effort.                             |
+| `get_project_context`, `update_project_context`                                                  | Read or explicitly update project instructions and confirmed memory.                                                     |
+| `get_task_status`, `get_task_results`, `get_agent_messages`, `send_agent_message`, `cancel_task` | Inspect ongoing work, reply to agent questions, or interrupt sessions while retaining records.                           |
+| `complete_task_from_evidence`                                                                    | Record checks the user explicitly confirms were completed outside the managed session; it does not choose parent status. |
+| `backup_database`, `get_backup_status`                                                           | Create or inspect a MySQL backup and optional isolated restore verification.                                             |
+
+Tool arguments are validated against MCP schemas and domain DTOs; record IDs must be UUIDs and unknown input properties are rejected. Project/application paths are absolute host paths. Never put credentials or secrets in records, prompts, messages, commands, logs or reports.
+
+`executionCapabilities` currently supports `docker`. When the approved step needs the local Docker daemon, the LLM can include that capability; Manager passes the configured local Unix socket to that session's workspace-write sandbox. Remote Docker contexts are unsupported. Ordinary sessions keep network disabled. Release operations require separate explicit typed scope in the approved plan and actual host permissions.
+
+`complete_task_from_evidence` requires `userConfirmed: true`, a task-owned subtask, and non-empty evidence. It updates that subtask only; the LLM chooses the parent status separately. There is no automatic retry, marker reconciliation, or parent completion from worker text.
 
 ## Runtime boundary
 
-The MCP client calls Manager directly (or through a separately configured tunnel). Manager runs in Docker Compose and communicates with the Mac-hosted Codex app-server over WebSocket; the app-server resolves registered absolute Mac paths and operates on host checkouts/Git. The dashboard is a separate read-only view and is not an MCP proxy. Live app-server model-listing/session-start and browser/CUA GUI checks have not been completed in the current environment because of sandbox/tool connectivity limits; no successful WebStorm launch is claimed.
+Manager, MySQL and the dashboard run in Docker Compose. The Codex app-server and repository checkouts run on the Mac host. Manager passes host absolute paths to the app-server; user checkouts are never mounted into the Manager container. Check live availability using `manager_status` and the actual MCP route; do not infer WebSocket or agent execution success from HTTP health alone.
 
-### Profile reasoning and task context
+Hosted ChatGPT cannot directly reach a loopback endpoint. A separately configured secure MCP tunnel may forward requests to Manager. AgentPier does not expose a public endpoint or create that tunnel; follow the MCP client’s current connection documentation.
 
-`update_agent_profile` accepts `role` and at least one of `model` or `defaultReasoningEffort`.
-Model-only clients remain supported. Existing profiles default to `medium`; both model and effort are validated against the live `list_models` catalog (`supportedReasoningEfforts`). Unsupported pairs fail before starting work, without silently selecting another effort. `list_agents` and the read-only dashboard expose `defaultReasoningEffort`.
+### Model and skill context
 
-Analysis, execution and continued user turns pass the pinned model and `effort` through `turn/start`; `thread/start` does not receive an effort parameter. Session evidence includes `effectiveModel`, `effectiveReasoningEffort`, and `selectedSkills` (paths and SHA-256 hashes). Effective values record the accepted turn overrides, not an independent provider attestation.
+`list_agents` exposes profile skills, instruction versions and configured defaults. The LLM selects a profile and optional exact skill names from that profile. Manager does not select skills from task/application keywords. Session records include the chosen profile/model/skills and their hashes. A `dispatch_orchestration_assignment` includes dependency context supplied by the LLM. Manager passes that context through without independently verifying its provenance or truth; the worker cannot recover context by recursively querying its parent task.
 
-Skills are selected by phase, task and application from the profile catalog. Angular/SSR guidance is conditional and excluded for static dashboards. Custom skills require their exact name in the task/application contract. Execution receives only declared `dependsOn` results as JSON contracts with `stepId`, `status`, a redacted summary capped at 4,000 characters, and a truncation flag; full results remain in task records.
+### Managed session capabilities
 
-
-### Managed session network policy
-
-Ordinary managed `turn/start` and host `command/exec` requests keep network disabled.
-An optional, non-empty `steps[].releaseOperations` array is persisted with the approved plan:
-- `{ "type": "commit", "paths": ["relative/file.ts"] }`
-- `{ "type": "push", "remote": "origin", "ref": "feature/work" }`
-- `{ "type": "pr", "head": "owner/repo:feature/work", "base": "owner/repo:main", "action": "create" }` (`create` or `update`)
-- `{ "type": "review", "pr": "https://github.com/owner/repo/pull/1", "action": "approve" }` (`comment`, `approve`, `request-changes`)
-- `{ "type": "merge", "pr": "https://github.com/owner/repo/pull/1", "method": "squash" }` (`merge`, `squash`, `rebase`)
-
-Scope belongs to the step's registered repository and selected `targetBranch`. Unknown operations,
-missing targets, extra fields, null and empty scopes are rejected. Only explicitly approved typed
-scope replaces the no-publish handoff and enables release turn/explicitly scoped host command
-network access and the host-resolved Git directory writable root. Ordinary sessions are not broadened.
-External/shared Git directories are unsupported and fail closed. Approval policy remains `never`.
-No automated GitHub client or command-level operation enforcement is introduced. Continued turns
-inherit the accepted policy; messages cannot add scope. Requested permissions are not proof of
-host capability. Real MCP/WebSocket verification remains required before claiming live results.
+Ordinary managed turns and host `command/exec` keep network access disabled. A plan step may declare typed `releaseOperations` for specifically approved commit, push, PR, review, or merge actions; this metadata does not bypass host authentication or tool permissions. Without such explicit scope, release actions are not authorized. Docker access is separate from release scope and requires the approved `docker` capability.

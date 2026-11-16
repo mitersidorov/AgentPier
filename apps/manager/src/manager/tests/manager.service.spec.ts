@@ -138,3 +138,74 @@ describe('ManagerService workflow safeguards', () => {
     expect(context.instructions.map((row: any) => row.id)).toEqual(['confirmed']);
   });
 });
+
+describe('ManagerService targeted orchestration reads', () => {
+  const createQuery = () => ({
+    where: jest.fn().mockReturnThis(),
+    andWhere: jest.fn().mockReturnThis(),
+    orderBy: jest.fn().mockReturnThis(),
+    take: jest.fn().mockReturnThis(),
+    getMany: jest.fn().mockResolvedValue([]),
+    getOne: jest.fn().mockResolvedValue(null),
+  });
+
+  it('limits task session reads to the selected task without sorting', async () => {
+    const query = createQuery();
+    const records = { createQueryBuilder: jest.fn().mockReturnValue(query) };
+    const service = new ManagerService(records as any);
+
+    await service.listTaskSessions('task-1', 'project-1', 501);
+
+    expect(query.where).toHaveBeenCalledWith('record.kind = :kind', { kind: 'session' });
+    expect(query.andWhere).toHaveBeenCalledWith("JSON_UNQUOTE(JSON_EXTRACT(record.data, '$.taskId')) = :taskId", {
+      taskId: 'task-1',
+    });
+    expect(query.andWhere).toHaveBeenCalledWith('record.projectId = :projectId', { projectId: 'project-1' });
+    expect(query.take).toHaveBeenCalledWith(501);
+    expect(query.orderBy).not.toHaveBeenCalled();
+  });
+
+  it('filters task session reads by phase before applying the limit', async () => {
+    const query = createQuery();
+    const records = { createQueryBuilder: jest.fn().mockReturnValue(query) };
+    const service = new ManagerService(records as any);
+
+    await service.listTaskSessions('task-1', 'project-1', 501, 'analysis');
+
+    expect(query.andWhere).toHaveBeenCalledWith("JSON_UNQUOTE(JSON_EXTRACT(record.data, '$.phase')) = :phase", {
+      phase: 'analysis',
+    });
+    expect(query.take).toHaveBeenCalledWith(501);
+  });
+
+  it('finds a session by thread id without listing and sorting all sessions', async () => {
+    const query = createQuery();
+    const records = { createQueryBuilder: jest.fn().mockReturnValue(query) };
+    const service = new ManagerService(records as any);
+
+    await service.findSessionByThreadId('thread-1');
+
+    expect(query.where).toHaveBeenCalledWith('record.kind = :kind', { kind: 'session' });
+    expect(query.andWhere).toHaveBeenCalledWith("JSON_UNQUOTE(JSON_EXTRACT(record.data, '$.threadId')) = :threadId", {
+      threadId: 'thread-1',
+    });
+    expect(query.getOne).toHaveBeenCalled();
+    expect(query.orderBy).not.toHaveBeenCalled();
+  });
+
+  it('lists only active sessions without sorting the session table', async () => {
+    const query = createQuery();
+    const records = { createQueryBuilder: jest.fn().mockReturnValue(query) };
+    const service = new ManagerService(records as any);
+
+    await service.listActiveSessions();
+
+    expect(query.where).toHaveBeenCalledWith('record.kind = :kind', { kind: 'session' });
+    expect(query.andWhere).toHaveBeenCalledWith(
+      "JSON_UNQUOTE(JSON_EXTRACT(record.data, '$.status')) IN (:...statuses)",
+      { statuses: ['running', 'waiting_for_user'] },
+    );
+    expect(query.take).toHaveBeenCalledWith(1000);
+    expect(query.orderBy).not.toHaveBeenCalled();
+  });
+});

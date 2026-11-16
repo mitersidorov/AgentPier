@@ -27,6 +27,11 @@ import { EmptyToolArgumentsDto } from '../dto/empty-tool-arguments.dto';
 import { TaskPlanDto } from '../../tasks/dto/task-plan.dto';
 import { UpdateAgentProfileDto } from '../../agents/dto/update-agent-profile.dto';
 import { CompleteTaskFromEvidenceDto } from '../../tasks/dto/complete-task-from-evidence.dto';
+import { RecordOrchestrationDecisionDto } from '../../tasks/dto/record-orchestration-decision.dto';
+import { DispatchAssignmentDto, RecordAssignmentOutcomeDto } from '../../tasks/dto/dispatch-assignment.dto';
+import { RecordTaskStatusDto } from '../../tasks/dto/record-task-status.dto';
+import { DispatchAnalysisDto } from '../../tasks/dto/dispatch-analysis.dto';
+import { BeginExecutionDto } from '../../tasks/dto/begin-execution.dto';
 
 const taskPlanSchema = {
   type: 'object',
@@ -49,6 +54,7 @@ const taskPlanSchema = {
           checks: { type: 'array', items: { type: 'string' } },
           executionCapabilities: { type: 'array', uniqueItems: true, items: { type: 'string', enum: ['docker'] } },
           workingDirectory: { type: 'string', enum: ['application', 'repository'] },
+          skills: { type: 'array', uniqueItems: true, items: { type: 'string' } },
           releaseOperations: {
             type: 'array',
             minItems: 1,
@@ -105,7 +111,7 @@ const taskPlanSchema = {
             },
           },
         },
-        required: ['title', 'description'],
+        required: ['title', 'description', 'workingDirectory'],
         additionalProperties: false,
       },
     },
@@ -324,7 +330,8 @@ const tools: Array<{ name: string; description: string; inputSchema: Record<stri
   },
   {
     name: 'analyze_task',
-    description: 'Launch new read-only Codex analysis sessions for the selected project applications',
+    description:
+      'Create a task record for the LLM orchestrator; it selects and dispatches read-only analysis sessions explicitly',
     inputSchema: {
       type: 'object',
       properties: {
@@ -336,8 +343,27 @@ const tools: Array<{ name: string; description: string; inputSchema: Record<stri
   },
   {
     name: 'get_analysis_results',
-    description: 'Read saved analysis results, agent messages and session IDs',
+    description: 'Read saved analysis session results and session IDs',
     inputSchema: { type: 'object', properties: { taskId: { type: 'string', format: 'uuid' } }, required: ['taskId'] },
+  },
+  {
+    name: 'dispatch_orchestration_analysis',
+    description:
+      'Start one read-only analysis session selected by the LLM orchestrator for an explicit profile and application',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        taskId: { type: 'string', format: 'uuid' },
+        appId: { type: 'string', format: 'uuid' },
+        repositoryId: { type: 'string', format: 'uuid' },
+        profile: { type: 'string', pattern: '^[a-z0-9][a-z0-9-]{0,40}$' },
+        workingDirectory: { type: 'string', enum: ['application', 'repository'] },
+        focus: { type: 'string', minLength: 1, maxLength: 20000 },
+        skills: { type: 'array', uniqueItems: true, items: { type: 'string' } },
+      },
+      required: ['taskId', 'appId', 'profile', 'workingDirectory', 'focus'],
+      additionalProperties: false,
+    },
   },
   {
     name: 'save_plan',
@@ -359,9 +385,16 @@ const tools: Array<{ name: string; description: string; inputSchema: Record<stri
   },
   {
     name: 'execute_task',
-    description:
-      'Execute an approved dependency plan in fresh profile-matched Codex threads; retry only incomplete steps',
-    inputSchema: { type: 'object', properties: { taskId: { type: 'string', format: 'uuid' } }, required: ['taskId'] },
+    description: 'Record the LLM orchestrator decision to begin an approved plan; dispatch chosen steps individually',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        taskId: { type: 'string', format: 'uuid' },
+        decision: { type: 'string', minLength: 1, maxLength: 20000 },
+      },
+      required: ['taskId', 'decision'],
+      additionalProperties: false,
+    },
   },
   {
     name: 'complete_task_from_evidence',
@@ -417,6 +450,82 @@ const tools: Array<{ name: string; description: string; inputSchema: Record<stri
     name: 'get_task_results',
     description: 'Return Codex results, local branches, changed files and checks',
     inputSchema: { type: 'object', properties: { taskId: { type: 'string', format: 'uuid' } }, required: ['taskId'] },
+  },
+  {
+    name: 'read_orchestration_task',
+    description: 'Read one task-scoped record including its selected plan, analysis and recorded decisions',
+    inputSchema: { type: 'object', properties: { taskId: { type: 'string', format: 'uuid' } }, required: ['taskId'] },
+  },
+  {
+    name: 'record_orchestration_decision',
+    description: 'Append an orchestrator-selected decision to a task record; this does not execute work',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        taskId: { type: 'string', format: 'uuid' },
+        decision: { type: 'string', minLength: 1, maxLength: 20000 },
+      },
+      required: ['taskId', 'decision'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'dispatch_orchestration_assignment',
+    description: 'Dispatch exactly one explicitly approved assignment selected by the orchestrator with its context',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        taskId: { type: 'string', format: 'uuid' },
+        stepId: { type: 'string', minLength: 1, maxLength: 255 },
+        dependencies: { type: 'object', additionalProperties: true },
+      },
+      required: ['taskId', 'stepId', 'dependencies'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'record_orchestration_task_status',
+    description: 'Persist the orchestrator-selected task status and decision independently of assignment outcomes',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        taskId: { type: 'string', format: 'uuid' },
+        status: {
+          type: 'string',
+          enum: [
+            'pending_action',
+            'analysis_running',
+            'analysis_complete',
+            'plan_draft',
+            'approved',
+            'executing',
+            'review_ready',
+            'completed',
+            'blocked',
+            'cancelled',
+          ],
+        },
+        decision: { type: 'string', minLength: 1, maxLength: 20000 },
+      },
+      required: ['taskId', 'status', 'decision'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'record_assignment_outcome',
+    description: 'Persist the orchestrator-selected assignment status, outcome, and evidence',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        taskId: { type: 'string', format: 'uuid' },
+        subtaskId: { type: 'string', format: 'uuid' },
+        status: { type: 'string', enum: ['completed', 'partial', 'blocked'] },
+        outcome: { type: 'string', minLength: 1, maxLength: 20000 },
+        evidence: { type: 'array', items: { type: 'string', minLength: 1, maxLength: 2000 }, minItems: 1 },
+      },
+      required: ['taskId', 'subtaskId', 'status', 'outcome', 'evidence'],
+      additionalProperties: false,
+    },
   },
   {
     name: 'backup_database',
@@ -507,13 +616,19 @@ export class McpController {
       get_analysis_results: TaskIdDto,
       save_plan: SavePlanDto,
       approve_plan: ApprovePlanDto,
-      execute_task: TaskIdDto,
+      execute_task: BeginExecutionDto,
       complete_task_from_evidence: CompleteTaskFromEvidenceDto,
       get_task_status: TaskIdDto,
       get_agent_messages: TaskIdDto,
       send_agent_message: SendAgentMessageDto,
       cancel_task: TaskIdDto,
       get_task_results: TaskIdDto,
+      read_orchestration_task: TaskIdDto,
+      record_orchestration_decision: RecordOrchestrationDecisionDto,
+      record_orchestration_task_status: RecordTaskStatusDto,
+      dispatch_orchestration_assignment: DispatchAssignmentDto,
+      dispatch_orchestration_analysis: DispatchAnalysisDto,
+      record_assignment_outcome: RecordAssignmentOutcomeDto,
       backup_database: CreateBackupDto,
       get_backup_status: EmptyToolArgumentsDto,
     };
@@ -573,6 +688,8 @@ export class McpController {
         return this.tasks.analyze(args.projectId, args.request);
       case 'get_analysis_results':
         return this.tasks.analysis(args.taskId);
+      case 'dispatch_orchestration_analysis':
+        return this.tasks.dispatchAnalysis(args as DispatchAnalysisDto);
       case 'save_plan':
         return this.tasks.draft(args.taskId, args.plan as TaskPlanDto);
       case 'approve_plan': {
@@ -580,7 +697,7 @@ export class McpController {
         return this.tasks.approve(args.taskId, args.plan as TaskPlanDto, true);
       }
       case 'execute_task':
-        return this.tasks.execute(args.taskId);
+        return this.tasks.execute(args.taskId, (args as BeginExecutionDto).decision);
       case 'complete_task_from_evidence': {
         const input = args as CompleteTaskFromEvidenceDto;
         return this.tasks.completeFromEvidence(
@@ -601,6 +718,22 @@ export class McpController {
         return this.tasks.cancel(args.taskId);
       case 'get_task_results':
         return this.tasks.results(args.taskId);
+      case 'read_orchestration_task':
+        return this.tasks.read(args.taskId);
+      case 'record_orchestration_decision':
+        return this.tasks.recordDecision(args.taskId, args.decision);
+      case 'record_orchestration_task_status':
+        return this.tasks.recordTaskStatus(args.taskId, args.status, args.decision);
+      case 'dispatch_orchestration_assignment':
+        return this.tasks.dispatchAssignment(args.taskId, args.stepId, args.dependencies);
+      case 'record_assignment_outcome':
+        return this.tasks.recordAssignmentOutcome(
+          args.taskId,
+          args.subtaskId,
+          args.status,
+          args.outcome,
+          args.evidence,
+        );
       case 'backup_database':
         return this.backup.createBackup(
           args.verifyRestore === true ? 'manual-verified' : 'manual',

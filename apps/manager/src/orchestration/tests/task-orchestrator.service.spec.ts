@@ -12,7 +12,8 @@ describe('TaskOrchestratorService notifications', () => {
     };
     const persisted: Array<{ kind: string; data: any }> = [];
     const records = {
-      list: jest.fn().mockResolvedValue([session]),
+      findSessionByThreadId: jest.fn().mockResolvedValue(session),
+      listActiveSessions: jest.fn().mockResolvedValue([]),
       create: jest.fn(async (kind: string, data: any) => {
         persisted.push({ kind, data });
         return { id: `${kind}-${persisted.length}`, data };
@@ -38,7 +39,8 @@ describe('TaskOrchestratorService notifications', () => {
       data: { threadId: 'thread-1', status: 'completed' },
     };
     const records = {
-      list: jest.fn().mockResolvedValue([session]),
+      findSessionByThreadId: jest.fn().mockResolvedValue(session),
+      listActiveSessions: jest.fn().mockResolvedValue([]),
       create: jest.fn().mockRejectedValue(new Error('sensitive event payload')),
       update: jest.fn(),
     };
@@ -66,7 +68,8 @@ describe('TaskOrchestratorService notifications', () => {
       data: { threadId: 'thread-1', turnId, taskId: 'task-1', phase: 'execution', status: 'running' },
     };
     const records = {
-      list: jest.fn().mockResolvedValue([session]),
+      findSessionByThreadId: jest.fn().mockResolvedValue(session),
+      listActiveSessions: jest.fn().mockResolvedValue([]),
       create: jest.fn().mockRejectedValue(new Error('journal unavailable')),
       update: jest.fn().mockResolvedValue(undefined),
     };
@@ -133,6 +136,7 @@ describe('TaskOrchestratorService notifications', () => {
     });
     expect(JSON.stringify(persisted)).not.toContain('private-material');
     expect(JSON.stringify(persisted)).not.toContain('ghp_123456789012345678901234567890123456');
+    expect(records.findSessionByThreadId).toHaveBeenCalledWith('thread-1');
     expect(warning).not.toHaveBeenCalled();
     expect(error).not.toHaveBeenCalled();
     warning.mockRestore();
@@ -205,15 +209,289 @@ describe('TaskOrchestratorService notifications', () => {
   });
 });
 
+describe('TaskOrchestratorService selected analysis dispatch', () => {
+  it('starts only the requested read-only profile session and returns its stored result to the orchestrator', async () => {
+    const task = {
+      id: 'task-analysis',
+      kind: 'task',
+      projectId: 'project-analysis',
+      data: { originalRequest: 'Inspect the backend behavior', status: 'pending_action', sessionIds: [] },
+    };
+    const repository = {
+      id: 'repo-analysis',
+      kind: 'repository',
+      projectId: task.projectId,
+      data: { path: '/repo' },
+    };
+    const application = {
+      id: 'app-analysis',
+      kind: 'app',
+      projectId: task.projectId,
+      data: { name: 'Manager', path: '/repo/apps/manager', repositoryId: repository.id },
+    };
+    const session = {
+      id: 'session-analysis',
+      kind: 'session',
+      projectId: task.projectId,
+      data: {} as Record<string, any>,
+    };
+    const records = {
+      findSessionByThreadId: jest.fn().mockResolvedValue(session),
+      get: jest.fn(async (id: string) => {
+        if (id === task.id) return task;
+        if (id === application.id) return application;
+        if (id === repository.id) return repository;
+        if (id === session.id) return session;
+        throw new Error(`Unexpected record ${id}`);
+      }),
+      create: jest.fn().mockImplementation(async (kind: string, data: any) => {
+        if (kind === 'session') {
+          session.data = data;
+          return session;
+        }
+        return { id: 'event-id', kind, data };
+      }),
+      update: jest.fn().mockImplementation(async (_id: string, data: any) => {
+        session.data = data;
+        return session;
+      }),
+      updateTask: jest.fn().mockImplementation(async (_id: string, patch: any) => {
+        task.data = { ...task.data, ...patch };
+        return task;
+      }),
+      getProjectContext: jest.fn().mockResolvedValue({
+        project: { id: task.projectId, data: { name: 'AgentPier' } },
+        instructions: [],
+        confirmedMemory: [],
+        applications: [application],
+        repositories: [repository],
+      }),
+    };
+    const selectedSkill = {
+      path: '/agents/backend-nestjs/skills/backend-review-checklist/SKILL.md',
+      content: 'Review',
+    };
+    const profile = {
+      role: 'backend-nestjs',
+      profile: 'Backend profile instructions',
+      skills: [
+        selectedSkill,
+        { path: '/agents/backend-nestjs/skills/minimal-test-strategy/SKILL.md', content: 'Tests' },
+      ],
+      version: 'profile-v1',
+      defaultModel: 'backend-model',
+      defaultReasoningEffort: 'medium',
+    };
+    const profiles = {
+      load: jest.fn().mockResolvedValue(profile),
+      resolveRuntime: jest.fn().mockResolvedValue({ model: 'backend-model', effort: 'medium' }),
+    };
+    const codex = {
+      events: new EventEmitter(),
+      startThread: jest.fn().mockResolvedValue({ threadId: 'analysis-thread', sessionId: 'codex-session' }),
+      startTurn: jest.fn().mockResolvedValue({ turnId: 'analysis-turn' }),
+    };
+    const sessionRecords = { forTask: jest.fn().mockResolvedValue([session]) };
+    const service = new TaskOrchestratorService(records as any, profiles as any, codex as any, sessionRecords as any);
+
+    const launched = await service.dispatchAnalysis({
+      taskId: task.id,
+      appId: application.id,
+      profile: 'backend-nestjs',
+      workingDirectory: 'application',
+      focus: 'Inspect the persisted assignment flow',
+      skills: ['backend-review-checklist'],
+    });
+
+    expect(launched).toMatchObject({
+      taskId: task.id,
+      sessionId: session.id,
+      profile: 'backend-nestjs',
+      status: 'running',
+    });
+    expect(profiles.load).toHaveBeenCalledWith('backend-nestjs');
+    expect(session.data).toMatchObject({
+      profile: 'backend-nestjs',
+      cwd: application.data.path,
+      status: 'running',
+    });
+    expect(codex.startThread).toHaveBeenCalledWith(
+      expect.objectContaining({ cwd: application.data.path, mode: 'read-only' }),
+    );
+    expect(codex.startTurn).toHaveBeenCalledWith(
+      expect.objectContaining({ threadId: 'analysis-thread', mode: 'read-only' }),
+    );
+    expect(codex.startThread.mock.calls[0][0].profileInstructions).toContain('Backend profile instructions');
+    expect(codex.startThread.mock.calls[0][0].profileInstructions).toContain('Review');
+    expect(codex.startThread.mock.calls[0][0].profileInstructions).not.toContain('Tests');
+    expect(task.data.sessionIds).toEqual([session.id]);
+    const active = await service.getAnalysisResults(task.id);
+    expect(sessionRecords.forTask).toHaveBeenCalledWith(task.id, task.projectId, 501, 'analysis');
+    expect(active.results).toEqual([
+      expect.objectContaining({
+        sessionId: session.id,
+        profile: 'backend-nestjs',
+        status: 'running',
+      }),
+    ]);
+    expect(active.sessionsTruncated).toBe(false);
+
+    await (service as any).handleCodexEvent({
+      method: 'turn/completed',
+      params: {
+        threadId: 'analysis-thread',
+        turn: {
+          id: 'analysis-turn',
+          status: 'completed',
+          items: [{ type: 'agentMessage', text: 'Confirmed analysis findings' }],
+        },
+      },
+    });
+    expect(session.data).toMatchObject({
+      taskId: task.id,
+      phase: 'analysis',
+      status: 'completed',
+      result: 'Confirmed analysis findings',
+    });
+    const results = await service.getAnalysisResults(task.id);
+    expect(results.results).toEqual([
+      expect.objectContaining({
+        sessionId: session.id,
+        profile: 'backend-nestjs',
+        status: 'completed',
+        result: 'Confirmed analysis findings',
+      }),
+    ]);
+  });
+
+  it('records analysis dispatch errors on the task so the dashboard can show them', async () => {
+    const task = {
+      id: 'task-analysis-failed',
+      kind: 'task',
+      projectId: 'project-analysis',
+      data: { originalRequest: 'Inspect the backend', status: 'pending_action', sessionIds: [] },
+    };
+    const app = {
+      id: 'app-analysis',
+      kind: 'app',
+      projectId: task.projectId,
+      data: { path: '/repo/apps/manager' },
+    };
+    const records = {
+      get: jest.fn(async (id: string) => (id === task.id ? task : app)),
+      updateTask: jest.fn(async (_id: string, patch: any) => {
+        task.data = { ...task.data, ...patch };
+        return task;
+      }),
+    };
+    const profiles = { load: jest.fn().mockRejectedValue(new Error('Profile file unavailable')) };
+    const service = new TaskOrchestratorService(records as any, profiles as any, {} as any, {} as any);
+
+    await expect(
+      service.dispatchAnalysis({
+        taskId: task.id,
+        appId: app.id,
+        profile: 'backend-nestjs',
+        workingDirectory: 'application',
+        focus: 'Inspect the backend',
+      }),
+    ).rejects.toThrow('Profile file unavailable');
+
+    expect(profiles.load).toHaveBeenCalledWith('backend-nestjs');
+    expect(task.data).toMatchObject({
+      status: 'pending_action',
+      error: 'Profile file unavailable',
+      analysisDispatchError: 'Profile file unavailable',
+    });
+    expect(task.data.sessionIds).toEqual([]);
+  });
+
+  it('persists execution-session results for later LLM assessment without setting parent status', async () => {
+    const subtask = {
+      id: 'subtask-running',
+      kind: 'subtask',
+      data: { taskId: 'task-running', status: 'running', id: 'step-running' },
+    };
+    const session = {
+      id: 'session-running',
+      projectId: 'project-running',
+      data: {
+        taskId: 'task-running',
+        subtaskId: subtask.id,
+        threadId: 'execution-thread',
+        turnId: 'execution-turn',
+        phase: 'execution',
+        cwd: '/repo/apps/manager',
+        status: 'running',
+      },
+    };
+    const records = {
+      findSessionByThreadId: jest.fn().mockResolvedValue(session),
+      get: jest.fn().mockResolvedValue(subtask),
+      create: jest.fn().mockResolvedValue(undefined),
+      update: jest.fn().mockImplementation(async (id: string, data: any) => {
+        if (id === session.id) session.data = data;
+        if (id === subtask.id) subtask.data = data;
+      }),
+      updateTask: jest.fn(),
+    };
+    const codex = { runCommand: jest.fn().mockResolvedValueOnce(' M file.ts').mockResolvedValueOnce('file.ts | 1 +') };
+    const service = new TaskOrchestratorService(records as any, {} as any, codex as any, {} as any);
+
+    await (service as any).handleCodexEvent({
+      method: 'turn/completed',
+      params: {
+        threadId: session.data.threadId,
+        turn: {
+          id: session.data.turnId,
+          status: 'completed',
+          items: [{ type: 'agentMessage', text: 'AGENTPIER_RESULT: blocked; environment issue reported' }],
+        },
+      },
+    });
+
+    expect(subtask.data).toMatchObject({
+      status: 'awaiting_outcome',
+      result: 'AGENTPIER_RESULT: blocked; environment issue reported',
+      changes: ' M file.ts',
+      diffStat: 'file.ts | 1 +',
+    });
+    expect(records.updateTask).not.toHaveBeenCalled();
+  });
+
+  it('caps analysis session reads and signals when more task sessions exist', async () => {
+    const task = { id: 'task-many-sessions', kind: 'task', projectId: 'project-many' };
+    const sessions = Array.from({ length: 501 }, (_, index) => ({
+      id: `session-${index}`,
+      data: { taskId: task.id, phase: 'analysis', status: 'completed', result: `result-${index}` },
+    }));
+    const records = { get: jest.fn().mockResolvedValue(task) };
+    const sessionRecords = { forTask: jest.fn().mockResolvedValue(sessions) };
+    const service = new TaskOrchestratorService(records as any, {} as any, {} as any, sessionRecords as any);
+
+    const output = await service.getAnalysisResults(task.id);
+
+    expect(output.sessions).toHaveLength(500);
+    expect(output.sessionsTruncated).toBe(true);
+    expect(output.results).toHaveLength(500);
+    expect(sessionRecords.forTask).toHaveBeenCalledWith(task.id, task.projectId, 501, 'analysis');
+  });
+});
+
 describe('TaskOrchestratorService branch policy', () => {
   const runStep = async (
     targetBranch: string,
-    result = 'AGENTPIER_RESULT: completed',
     executionCapabilities: Array<'docker'> = [],
+    interruptImmediately = false,
+    notifyBeforeStartReturns = true,
+    dependencyContext: Record<string, any> = {
+      declared: 'contract '.repeat(1000),
+      unrelated: 'must-not-leak',
+    },
   ) => {
     const task = { id: 'task-12345678', kind: 'task', projectId: 'project-1', data: { originalRequest: 'request' } };
     const subtask = { id: 'subtask-1', data: {} };
-    const session = { id: 'session-1', data: { taskId: task.id, subtaskId: subtask.id } };
+    const session = { id: 'session-1', kind: 'session', data: { taskId: task.id, subtaskId: subtask.id } };
     const app = {
       id: 'app-1',
       name: 'Backend',
@@ -242,7 +520,11 @@ describe('TaskOrchestratorService branch policy', () => {
                   ? subtask
                   : task,
         ),
-      update: jest.fn().mockResolvedValue(subtask),
+      update: jest.fn().mockImplementation(async (id: string, data: any) => {
+        if (id === session.id) session.data = data;
+        if (id === subtask.id) subtask.data = data;
+        return id === session.id ? session : subtask;
+      }),
       getProjectContext: jest.fn().mockResolvedValue({
         project: { data: {} },
         applications: [],
@@ -250,7 +532,16 @@ describe('TaskOrchestratorService branch policy', () => {
         instructions: [],
         confirmedMemory: [],
       }),
-      create: jest.fn().mockResolvedValue(session),
+      findSessionByThreadId: jest
+        .fn()
+        .mockImplementation(async (threadId: string) => (session.data.threadId === threadId ? session : null)),
+      create: jest.fn().mockImplementation(async (kind: string, data: any) => {
+        if (kind === 'session') {
+          session.data = data;
+          return session;
+        }
+        return { id: `${kind}-1`, data };
+      }),
     };
     const codex = {
       events: new EventEmitter(),
@@ -261,7 +552,7 @@ describe('TaskOrchestratorService branch policy', () => {
         .mockResolvedValueOnce(' M file.ts')
         .mockResolvedValueOnce('diff stat'),
       startThread: jest.fn().mockResolvedValue({ threadId: 'thread-1', sessionId: 'codex-1', instructionSources: [] }),
-      startTurn: jest.fn().mockResolvedValue({ turnId: 'turn-1' }),
+      startTurn: jest.fn(),
       localDockerSocketPath: jest.fn().mockResolvedValue('/Users/test/.docker/run/docker.sock'),
     };
     const profiles = {
@@ -269,45 +560,65 @@ describe('TaskOrchestratorService branch policy', () => {
       load: jest.fn().mockResolvedValue({ profile: '', skills: [], version: 'v1', defaultModel: 'backend-model' }),
     };
     const service = new TaskOrchestratorService(records as any, profiles as any, codex as any, {} as any, {} as any);
-    (service as any).sessionCoordinator.terminalTurns.set('turn-1', {
-      turn: { status: 'completed', items: [{ type: 'agentMessage', text: result }] },
+    codex.startTurn.mockImplementation(async ({ threadId }: { threadId: string }) => {
+      const turn = interruptImmediately
+        ? {
+            id: 'turn-1',
+            status: 'interrupted',
+            items: [{ type: 'agentMessage', text: 'Partial work before interruption' }],
+          }
+        : undefined;
+      if (turn && notifyBeforeStartReturns)
+        await (service as any).handleCodexEvent({ method: 'turn/completed', params: { threadId, turn } });
+      return { turnId: 'turn-1', ...(turn ? { status: turn.status, turn } : {}) };
     });
+    let execution: any;
     try {
-      await (service as any).executeStep(
+      execution = await (service as any).executeStep(
         task.id,
         task.projectId,
         {
           id: 'step-1',
           title: 'change',
           description: 'change it',
+          profile: 'backend-nestjs',
           targetBranch,
           appId: app.id,
           repositoryId: repo.id,
+          workingDirectory: 'application',
           dependsOn: ['declared'],
           executionCapabilities,
         },
         subtask,
         app.data.path,
-        { declared: 'contract '.repeat(1000), unrelated: 'must-not-leak' },
+        dependencyContext,
       );
     } catch (error) {
       (error as any).testHarness = { codex, records };
       throw error;
     }
-    return { codex, records };
+    return { codex, records, execution, session, subtask };
   };
 
-  it('uses the explicitly selected active branch without switching or creating a branch', async () => {
+  it('passes the selected assignment context and returns after starting a fresh worker', async () => {
     const { codex, records } = await runStep('feature/work');
 
     expect(codex.runCommand).toHaveBeenCalledWith('/repo/apps/backend', ['git', 'branch', '--show-current']);
     expect(records.update).toHaveBeenCalledWith('subtask-1', expect.objectContaining({ branch: 'feature/work' }));
+    expect(records.update).toHaveBeenCalledWith(
+      'subtask-1',
+      expect.objectContaining({ status: 'running', sessionId: 'session-1', threadId: 'thread-1' }),
+    );
     expect(codex.startThread).toHaveBeenCalledWith(expect.objectContaining({ model: 'backend-model' }));
     expect(codex.startTurn).toHaveBeenCalledWith(expect.objectContaining({ model: 'backend-model', effort: 'medium' }));
     const prompt = codex.startTurn.mock.calls[0][0].prompt;
     expect(prompt).not.toContain('must-not-leak');
-    expect(prompt).toContain('"stepId":"declared"');
-    expect(prompt).toContain('"truncated":true');
+    expect(prompt).toContain('Persisted taskId: task-12345678');
+    expect(prompt).toContain('Persisted subtaskId: subtask-1');
+    expect(prompt).toContain('Selected profile: backend-nestjs');
+    expect(prompt).toContain('User-selected target branch: feature/work');
+    expect(prompt).toContain('Orchestrator-provided context for declared');
+    expect(prompt).not.toContain('Orchestrator-provided context for unrelated');
     const developerInstructions = codex.startThread.mock.calls[0][0].developerInstructions;
     expect(developerInstructions).toContain('Persisted AgentPier task ID: task-12345678');
     expect(developerInstructions).toContain('Persisted subtask ID: subtask-1');
@@ -326,218 +637,14 @@ describe('TaskOrchestratorService branch policy', () => {
     );
   });
 
-  it('refuses to execute when the explicitly requested branch is not already checked out', async () => {
-    await expect(runStep('feature/another')).rejects.toThrow(/AgentPier will not switch branches/);
-  });
-
-  it.each(['AGENTPIER_RESULT: blocked', 'AGENTPIER_RESULT: partial', 'No completion marker; I cannot proceed'])(
-    'keeps a refused or incomplete turn retryable instead of marking its subtask complete: %s',
-    async (result) => {
-      let failure: any;
-      try {
-        await runStep('feature/work', result);
-      } catch (error) {
-        failure = error;
-      }
-      expect(failure?.message).toMatch(/Agent reported|did not provide/);
-      const { records } = failure.testHarness;
-      expect(records.update).toHaveBeenCalledWith(
-        'subtask-1',
-        expect.objectContaining({ status: 'blocked', retryable: true }),
-      );
-    },
-  );
-
-  it('continues a completed blocked turn in read-only mode to collect its missing final marker', async () => {
-    const task = { id: 'task-1', kind: 'task', projectId: 'project-1', data: { error: 'missing completion marker' } };
-    const subtask = {
-      id: 'subtask-1',
-      kind: 'subtask',
-      data: {
-        id: 'frontend-russian-localization',
-        taskId: task.id,
-        status: 'blocked',
-        error: 'Agent did not provide the required AGENTPIER_RESULT completion status',
-        sessionId: 'session-1',
-        path: '/repo/apps/webapp',
-        branch: 'dev/pregnantbot-implementation',
-        result:
-          'Implemented localization. See reports/frontend-russian-localization.md; typecheck, Docker build, and 8 E2E tests passed.',
-      },
-    };
-    const session = {
-      id: 'session-1',
-      kind: 'session',
-      data: {
-        taskId: task.id,
-        status: 'blocked',
-        turnStatus: 'completed',
-        threadId: 'thread-1',
-        subtaskId: subtask.id,
-        cwd: subtask.data.path,
-        effectiveModel: 'frontend-model',
-        effectiveReasoningEffort: 'medium',
-      },
-    };
-    const records = {
-      get: jest.fn(async (id: string) => (id === task.id ? task : session)),
-      create: jest.fn().mockResolvedValue({ id: 'final-session', data: {} }),
-      update: jest.fn(async (id: string, data: any) => ({ id, kind: 'session', data })),
-    };
-    const codex = {
-      startThread: jest.fn().mockResolvedValue({ threadId: 'final-thread', sessionId: 'codex-final-session' }),
-      startTurn: jest.fn().mockResolvedValue({ turnId: 'final-turn' }),
-    };
-    const profiles = {
-      resolveRuntime: jest.fn().mockResolvedValue({ model: 'frontend-model', effort: 'medium' }),
-      load: jest.fn().mockResolvedValue({ profile: 'Frontend profile', skills: [] }),
-    };
-    const service = new TaskOrchestratorService(records as any, profiles as any, codex as any, {} as any, {} as any);
-    (service as any).sessionCoordinator.terminalTurns.set('final-turn', {
-      turn: {
-        status: 'completed',
-        items: [
-          {
-            type: 'agentMessage',
-            text: 'Verified existing report: typecheck and production build passed; Playwright E2E: 8 passed. Browser SIGTRAP was isolated to the agent session.\nAGENTPIER_RESULT: completed',
-          },
-        ],
-      },
-    });
-    const latest = new Map([[subtask.data.id, subtask]]);
-
-    await (service as any).finalizeMissingMarker(
-      task.id,
-      [
-        {
-          id: subtask.data.id,
-          title: 'Localize frontend',
-          description: 'Preserve current changes and verify the report',
-          profile: 'frontend-angular',
-          targetBranch: subtask.data.branch,
-          appId: 'app-1',
-        },
-      ],
-      latest,
+  it('provides a different selected branch to the worker instead of refusing based on branch policy', async () => {
+    const { codex } = await runStep('feature/another');
+    expect(codex.startThread.mock.calls[0][0].developerInstructions).toContain(
+      'User-selected target branch: feature/another',
     );
-
-    expect(codex.startThread).toHaveBeenCalledWith(
-      expect.objectContaining({ mode: 'read-only', cwd: subtask.data.path }),
+    expect(codex.startThread.mock.calls[0][0].developerInstructions).toMatch(
+      /Do not stop merely because it was not checked out at dispatch/i,
     );
-    expect(codex.startTurn).toHaveBeenCalledWith(
-      expect.objectContaining({ threadId: 'final-thread', cwd: subtask.data.path, mode: 'read-only' }),
-    );
-    const prompt = codex.startTurn.mock.calls[0][0].prompt;
-    expect(prompt).toContain('Do not repeat implementation');
-    expect(prompt).toContain('do not repeat them');
-    expect(prompt).toContain('Do not commit, push');
-    expect(latest.get(subtask.data.id).data).toMatchObject({
-      status: 'completed',
-      outcomeStatus: 'completed',
-      retryable: false,
-      completionEvidence: 'agent-finalization-report',
-    });
-  });
-
-  it.each([
-    ['wrong task', { taskId: 'other-task' }],
-    ['wrong subtask', { subtaskId: 'other-subtask' }],
-    ['active turn', { status: 'running', turnStatus: 'inProgress' }],
-  ])('does not finalize a mismatched or active session (%s)', async (_label, override) => {
-    const task = { id: 'task-1', kind: 'task', projectId: 'project-1', data: { error: 'completion marker missing' } };
-    const subtask = {
-      id: 'subtask-1',
-      kind: 'subtask',
-      data: {
-        id: 'step-1',
-        taskId: task.id,
-        status: 'blocked',
-        error: 'Agent did not provide the required AGENTPIER_RESULT completion status',
-        sessionId: 'session-1',
-        path: '/repo',
-      },
-    };
-    const session = {
-      id: 'session-1',
-      kind: 'session',
-      data: {
-        taskId: task.id,
-        subtaskId: subtask.id,
-        status: 'blocked',
-        turnStatus: 'completed',
-        threadId: 'thread-1',
-        cwd: '/repo',
-        ...override,
-      },
-    };
-    const records = {
-      get: jest.fn(async (id: string) => (id === task.id ? task : session)),
-      create: jest.fn(),
-      update: jest.fn(),
-    };
-    const service = new TaskOrchestratorService(
-      records as any,
-      {} as any,
-      { startThread: jest.fn() } as any,
-      {} as any,
-      {} as any,
-    );
-    await (service as any).finalizeMissingMarker(task.id, [{ id: 'step-1' }], new Map([['step-1', subtask]]));
-    expect(records.create).not.toHaveBeenCalled();
-  });
-
-  it('reconciles user-confirmed external checks without pretending the cancelled agent session completed', async () => {
-    const task = {
-      id: 'task-1',
-      kind: 'task',
-      projectId: 'project-1',
-      data: {
-        status: 'cancelled',
-        approvedPlan: { steps: [{ id: 'frontend-step' }] },
-        subtaskIds: ['subtask-1'],
-      },
-    };
-    const subtask = {
-      id: 'subtask-1',
-      kind: 'subtask',
-      projectId: 'project-1',
-      data: { taskId: task.id, id: 'frontend-step', status: 'cancelled', attempt: 1 },
-    };
-    const records = {
-      get: jest.fn(async (id: string) => (id === task.id ? task : subtask)),
-      list: jest.fn().mockResolvedValue([subtask]),
-      update: jest.fn(async (_id: string, data: any) => ({ ...subtask, data })),
-      updateTask: jest.fn(async (_id: string, data: any) => ({ ...task, data: { ...task.data, ...data } })),
-    };
-    const sessions = { forTask: jest.fn().mockResolvedValue([{ data: { status: 'cancelled' } }]) };
-    const service = new TaskOrchestratorService(records as any, {} as any, {} as any, {} as any, sessions as any);
-
-    const result = await service.completeFromEvidence(
-      task.id,
-      subtask.id,
-      'Russian localization is already present in the existing working tree.',
-      ['npm run typecheck passed', 'Production Docker build passed', 'Full Playwright E2E passed: 8 tests'],
-      true,
-    );
-
-    expect(records.update).toHaveBeenCalledWith(
-      subtask.id,
-      expect.objectContaining({
-        status: 'completed',
-        outcomeStatus: 'completed',
-        completionEvidence: expect.objectContaining({ source: 'user-confirmed-external-verification' }),
-        result: expect.not.stringContaining('AGENTPIER_RESULT: completed'),
-      }),
-    );
-    expect(records.updateTask).toHaveBeenCalledWith(
-      task.id,
-      expect.objectContaining({ status: 'review_ready', subtaskIds: [subtask.id] }),
-    );
-    expect(result.data.status).toBe('review_ready');
-    expect(records.update.mock.calls[0][1].completionEvidence).toEqual({
-      source: 'user-confirmed-external-verification',
-      evidence: ['npm run typecheck passed', 'Production Docker build passed', 'Full Playwright E2E passed: 8 tests'],
-    });
   });
 
   it('rejects oversized external evidence before reconciling the subtask', async () => {
@@ -579,16 +686,41 @@ describe('TaskOrchestratorService branch policy', () => {
     };
     const service = new TaskOrchestratorService(records as any, {} as any, {} as any, {} as any, {} as any);
     await expect(
-      (service as any).stepRepoPath('project-1', { id: 'step-1', appId: 'app-1', repositoryId: 'repo-1' }),
+      (service as any).stepRepoPath('project-1', {
+        id: 'step-1',
+        appId: 'app-1',
+        repositoryId: 'repo-1',
+        workingDirectory: 'application',
+      }),
     ).resolves.toBe('/repo/apps/backend');
     await expect(
       (service as any).stepRepoPath('project-1', {
         id: 'step-2',
         appId: 'app-1',
         repositoryId: 'repo-1',
-        checks: ['docker compose config'],
+        workingDirectory: 'repository',
       }),
     ).resolves.toBe('/repo');
+  });
+
+  it('rejects a selected app with no absolute registered path before starting a worker', async () => {
+    const records = {
+      get: jest.fn().mockResolvedValue({
+        id: 'app-1',
+        kind: 'app',
+        projectId: 'project-1',
+        data: { name: 'Manager' },
+      }),
+    };
+    const service = new TaskOrchestratorService(records as any, {} as any, {} as any, {} as any, {} as any);
+
+    await expect(
+      (service as any).stepRepoPath('project-1', {
+        id: 'step-missing-path',
+        appId: 'app-1',
+        workingDirectory: 'application',
+      }),
+    ).rejects.toThrow(/valid absolute registered path/);
   });
 
   it.each([
@@ -624,71 +756,62 @@ describe('TaskOrchestratorService branch policy', () => {
     );
   });
 
-  it('allows sibling application directories to run in parallel but locks repository-root overlaps', () => {
-    const service = new TaskOrchestratorService({} as any, {} as any, {} as any, {} as any, {} as any);
-    expect((service as any).pathsOverlap('/repo/apps/backend', '/repo/apps/webapp')).toBe(false);
-    expect((service as any).pathsOverlap('/repo', '/repo/apps/backend')).toBe(true);
-  });
-
-  it('blocks repository-root work while an application session is active but permits sibling applications', async () => {
-    const records = {
-      list: jest.fn(async (kind: string) =>
-        kind === 'session' ? [{ data: { status: 'running', cwd: '/repo/apps/backend' } }] : [],
-      ),
-    };
-    const service = new TaskOrchestratorService(records as any, {} as any, {} as any, {} as any, {} as any);
-    await expect(
-      (service as any).assertNoActivePathSessions('project-1', '/repo/apps/webapp', 'other-task'),
-    ).resolves.toBeUndefined();
-    await expect((service as any).assertNoActivePathSessions('project-1', '/repo', 'other-task')).rejects.toThrow(
-      /overlapping managed session is already running/,
-    );
-  });
-
-  it('requires an explicit target branch instead of inferring or creating one', () => {
-    const service = new TaskOrchestratorService({} as any, {} as any, {} as any, {} as any, {} as any);
-    expect(() =>
-      (service as any).approvedPlanExecution.normalizeSteps(
-        [{ title: 'change', description: 'change it' }],
-        new Set(['backend-nestjs']),
-      ),
-    ).toThrow(/Ask the user which branch to use and wait/);
-  });
-
-  it('derives scoped Docker access and repository working directory from an approved Compose check', () => {
-    const service = new TaskOrchestratorService({} as any, {} as any, {} as any, {} as any, {} as any);
-    const [step] = (service as any).approvedPlanExecution.normalizeSteps(
-      [
-        {
-          id: 'runtime',
-          title: 'Run local integration',
-          description: 'Run approved Compose checks',
-          targetBranch: 'fix/task',
-          profile: 'backend-nestjs',
-          appId: 'app-id',
-          repositoryId: 'repo-id',
-          checks: ['docker compose config', 'Full local E2E'],
-        },
-      ],
-      new Set(['backend-nestjs']),
-    );
-    expect(step.executionCapabilities).toEqual(['docker']);
-    expect(step.workingDirectory).toBe('repository');
-  });
-
   it('passes the local Docker socket only for a capability declared in the approved step', async () => {
-    const { codex } = await runStep('feature/work', 'AGENTPIER_RESULT: completed', ['docker']);
+    const { codex } = await runStep('feature/work', ['docker']);
     expect(codex.localDockerSocketPath).toHaveBeenCalledWith('/repo/apps/backend');
     expect(codex.startTurn).toHaveBeenCalledWith(
       expect.objectContaining({ dockerSocketPath: '/Users/test/.docker/run/docker.sock' }),
     );
+  });
+
+  it('keeps an immediately interrupted turn terminal and records an incomplete retryable subtask', async () => {
+    const { execution, session, subtask } = await runStep('feature/work', [], true);
+
+    expect(session.data).toMatchObject({
+      status: 'cancelled',
+      turnId: 'turn-1',
+      result: 'Partial work before interruption',
+      completedAt: expect.any(String),
+    });
+    expect(subtask.data).toMatchObject({
+      status: 'blocked',
+      outcomeStatus: 'blocked',
+      result: 'Partial work before interruption',
+      retryable: true,
+      error: 'Codex worker turn was interrupted before completion',
+    });
+    expect(execution.status).toBe('blocked');
+  });
+
+  it('reconciles an interrupted status returned by turn/start even without a notification', async () => {
+    const { execution, session, subtask } = await runStep('feature/work', [], true, false);
+
+    expect(session.data).toMatchObject({ status: 'cancelled', result: 'Partial work before interruption' });
+    expect(subtask.data).toMatchObject({ status: 'blocked', retryable: true });
+    expect(execution.status).toBe('blocked');
+  });
+
+  it('preserves blocked and partial dependency outcomes in the worker prompt', async () => {
+    const { codex } = await runStep('feature/work', [], false, true, {
+      declared: {
+        status: 'blocked',
+        outcome: 'Partial API contract; verification remains incomplete',
+        credentials: { token: 'sensitive-dependency-token' },
+      },
+    });
+
+    const prompt = codex.startTurn.mock.calls[0][0].prompt;
+    expect(prompt).toContain('"status":"blocked"');
+    expect(prompt).toContain('Partial API contract; verification remains incomplete');
+    expect(prompt).not.toContain('"status":"completed"');
+    expect(prompt).not.toContain('sensitive-dependency-token');
   });
 });
 
 describe('TaskOrchestratorService project instruction context', () => {
   it('injects confirmed instruction records without legacy project instruction metadata', () => {
     const service = new TaskOrchestratorService({} as any, {} as any, {} as any, {} as any, {} as any);
-    const promptContext = (service as any).contextText({
+    const promptContext = (service as any).managedSessions.contextText({
       project: { data: { name: 'AgentPier', instructions: 'legacy text', constraints: 'legacy constraint' } },
       instructions: [
         { id: 'architecture-1', data: { title: 'Architecture', category: 'architecture', content: 'Use NestJS.' } },
@@ -703,167 +826,7 @@ describe('TaskOrchestratorService project instruction context', () => {
   });
 });
 
-describe('TaskOrchestratorService retry behavior', () => {
-  const steps = [
-    {
-      id: 'frontend',
-      title: 'Frontend',
-      description: 'Update UI',
-      profile: 'frontend-angular',
-      targetBranch: 'fix/task',
-    },
-    { id: 'backend', title: 'Backend', description: 'Update API', profile: 'backend-nestjs', targetBranch: 'fix/task' },
-  ];
-
-  const retryHarness = (status: string, backendStatus: string, backendResult: string) => {
-    const task = {
-      id: 'task-1',
-      kind: 'task',
-      projectId: 'project-1',
-      data: { status, approvedPlan: { steps }, attempt: 1 },
-    };
-    const previous = [
-      {
-        id: 'frontend-old',
-        data: {
-          id: 'frontend',
-          taskId: task.id,
-          title: 'Frontend',
-          attempt: 1,
-          status: 'completed',
-          outcomeStatus: 'completed',
-          result: 'Frontend work completed. AGENTPIER_RESULT: completed',
-        },
-      },
-      {
-        id: 'backend-old',
-        data: {
-          id: 'backend',
-          taskId: task.id,
-          title: 'Backend',
-          attempt: 1,
-          status: backendStatus,
-          result: backendResult,
-        },
-      },
-    ];
-    const records = {
-      get: jest.fn().mockResolvedValue(task),
-      list: jest.fn(async (kind: string) => (kind === 'subtask' ? previous : [])),
-      create: jest
-        .fn()
-        .mockResolvedValue({ id: 'backend-retry', data: { id: 'backend', taskId: task.id, status: 'queued' } }),
-      update: jest.fn().mockResolvedValue(undefined),
-      updateTask: jest.fn(async (_id: string, patch: any) => ({ ...task, data: { ...task.data, ...patch } })),
-    };
-    const service = new TaskOrchestratorService(
-      records as any,
-      { list: jest.fn().mockResolvedValue([{ role: 'backend-nestjs' }, { role: 'frontend-angular' }]) } as any,
-      {} as any,
-      {} as any,
-      { forTask: jest.fn().mockResolvedValue([]) } as any,
-    );
-    (service as any).executeGraph = jest.fn().mockResolvedValue(undefined);
-    return { task, previous, records, service };
-  };
-
-  it('retries only blocked steps with a new subtask and reuses successful dependencies', async () => {
-    const { records, service } = retryHarness('blocked', 'blocked', 'Agent cannot access approval-required tools.');
-    await service.execute('task-1');
-    expect(records.create).toHaveBeenCalledTimes(1);
-    expect(records.create).toHaveBeenCalledWith(
-      'subtask',
-      expect.objectContaining({ id: 'backend', attempt: 2, status: 'queued' }),
-      'project-1',
-    );
-    expect((service as any).executeGraph).toHaveBeenCalledWith(
-      'task-1',
-      steps.map((step) => ({ ...step, dependsOn: [], executionCapabilities: [], workingDirectory: undefined })),
-      [expect.objectContaining({ id: 'frontend-old' }), expect.objectContaining({ id: 'backend-retry' })],
-    );
-  });
-
-  it('reclassifies a legacy completed refusal as blocked and makes it retryable', async () => {
-    const { records, service } = retryHarness(
-      'review_ready',
-      'completed',
-      'I can’t begin because AgentPier MCP requires approval and policy is never. No files changed.',
-    );
-    await service.execute('task-1');
-    expect(records.update).toHaveBeenCalledWith(
-      'backend-old',
-      expect.objectContaining({ status: 'blocked', outcomeStatus: 'blocked', retryable: true }),
-    );
-    expect(records.updateTask).toHaveBeenCalledWith('task-1', expect.objectContaining({ status: 'blocked' }));
-    expect(records.create).toHaveBeenCalledTimes(1);
-  });
-
-  it('does not start a retry while a previous task session is active', async () => {
-    const task = {
-      id: 'task-1',
-      kind: 'task',
-      projectId: 'project-1',
-      data: { status: 'blocked', approvedPlan: { steps }, attempt: 1 },
-    };
-    const records = {
-      get: jest.fn().mockResolvedValue(task),
-      list: jest.fn().mockResolvedValue([]),
-      create: jest.fn(),
-    };
-    const service = new TaskOrchestratorService(
-      records as any,
-      { list: jest.fn().mockResolvedValue([{ role: 'backend-nestjs' }, { role: 'frontend-angular' }]) } as any,
-      {} as any,
-      {} as any,
-      { forTask: jest.fn().mockResolvedValue([{ data: { status: 'running' } }]) } as any,
-    );
-    await expect(service.execute('task-1')).rejects.toThrow(/prior task sessions are still active/);
-    expect(records.create).not.toHaveBeenCalled();
-  });
-});
-
 describe('TaskOrchestratorService runtime evidence', () => {
-  it('passes resolved effort on fresh read-only analysis and persists the effective runtime', async () => {
-    const task = { id: 'task', kind: 'task', data: { originalRequest: 'Inspect service' } };
-    const records = {
-      get: jest.fn().mockResolvedValue(task),
-      create: jest.fn(async (_kind, data) => ({ id: 'session', data })),
-      update: jest.fn(),
-      updateTask: jest.fn(),
-    };
-    const profiles = {
-      load: jest.fn().mockResolvedValue({
-        profile: 'profile',
-        skills: [],
-        version: 'v1',
-        defaultModel: null,
-        defaultReasoningEffort: 'medium',
-      }),
-      resolveRuntime: jest.fn().mockResolvedValue({ model: 'live-default', effort: 'medium' }),
-    };
-    const codex = {
-      startThread: jest.fn().mockResolvedValue({ threadId: 'fresh', model: 'live-default' }),
-      startTurn: jest.fn().mockResolvedValue({ turnId: 'turn' }),
-    };
-    const service = new TaskOrchestratorService(records as any, profiles as any, codex as any, {} as any, {} as any);
-    await (service as any).runAnalysis('task', {
-      project: { id: 'project', data: {} },
-      applications: [{ id: 'app', data: { name: 'Manager', path: '/repo' } }],
-      instructions: [],
-      repositories: [],
-      confirmedMemory: [],
-    });
-    expect(codex.startThread).toHaveBeenCalledWith(expect.objectContaining({ mode: 'read-only' }));
-    expect(codex.startTurn).toHaveBeenCalledWith(
-      expect.objectContaining({ model: 'live-default', effort: 'medium', mode: 'read-only' }),
-    );
-    expect(records.create).toHaveBeenCalledWith(
-      'session',
-      expect.objectContaining({ effectiveModel: 'live-default', effectiveReasoningEffort: 'medium' }),
-      'project',
-    );
-  });
-
   it('pins continued user turns to session model/effort instead of changed profile defaults', async () => {
     const session = {
       id: 'session',
@@ -885,5 +848,225 @@ describe('TaskOrchestratorService runtime evidence', () => {
       'session',
       expect.objectContaining({ effectiveModel: 'pinned', effectiveReasoningEffort: 'high', turnId: 'continued' }),
     );
+  });
+});
+
+describe('TaskOrchestratorService LLM-directed actions', () => {
+  it('records the LLM decision to begin without auto-scheduling plan steps', async () => {
+    const task = { id: 'task', kind: 'task', data: { approvedPlan: { steps: [{ id: 'selected-by-llm' }] } } };
+    const records = { get: jest.fn().mockResolvedValue(task), updateTask: jest.fn().mockResolvedValue(task) };
+    const service = new TaskOrchestratorService(records as any, {} as any, {} as any, {} as any, {} as any);
+    await expect(service.execute('task', 'Begin backend implementation')).resolves.toBe(task);
+    expect(records.get).toHaveBeenCalledWith('task');
+    expect(records.updateTask).toHaveBeenCalledWith(
+      'task',
+      expect.objectContaining({ status: 'executing', executionDecision: 'Begin backend implementation' }),
+    );
+  });
+});
+
+describe('TaskOrchestratorService explicit assignment outcome persistence', () => {
+  it('updates only the current approved assignment from blocked to the LLM-selected status', async () => {
+    const task = {
+      id: 'task-1',
+      kind: 'task',
+      projectId: 'project-1',
+      data: { status: 'blocked', approvedPlan: { steps: [{ id: 'step-1' }] }, subtaskIds: ['subtask-1'] },
+    };
+    const subtask = {
+      id: 'subtask-1',
+      kind: 'subtask',
+      projectId: 'project-1',
+      data: { id: 'step-1', taskId: 'task-1', status: 'blocked' },
+    };
+    const updated = { ...subtask, data: { ...subtask.data, status: 'completed' } };
+    const records = {
+      get: jest.fn().mockResolvedValueOnce(task).mockResolvedValueOnce(subtask).mockResolvedValueOnce(updated),
+      update: jest.fn().mockResolvedValue(updated),
+      updateTask: jest.fn(),
+    };
+    const service = new TaskOrchestratorService(records as any, {} as any, {} as any, {} as any, {} as any);
+
+    await service.recordAssignmentOutcome('task-1', 'subtask-1', 'completed', 'Worker completed the approved work', [
+      'Focused tests passed',
+    ]);
+
+    expect(records.update).toHaveBeenCalledWith(
+      'subtask-1',
+      expect.objectContaining({
+        status: 'completed',
+        outcomeStatus: 'completed',
+        retryable: false,
+        orchestratorOutcome: expect.objectContaining({ evidence: ['Focused tests passed'] }),
+      }),
+    );
+    expect(records.updateTask).not.toHaveBeenCalled();
+  });
+});
+
+describe('TaskOrchestratorService explicit task status', () => {
+  it('persists parent status only on an explicit task-status decision', async () => {
+    const task = { id: 'task-1', kind: 'task', data: { status: 'blocked' } };
+    const records = { get: jest.fn().mockResolvedValue(task), updateTask: jest.fn() };
+    const service = new TaskOrchestratorService(records as any, {} as any, {} as any, {} as any, {} as any);
+    await service.recordTaskStatus('task-1', 'review_ready', 'Assignments reviewed');
+    expect(records.updateTask).toHaveBeenCalledWith('task-1', {
+      status: 'review_ready',
+      statusDecision: 'Assignments reviewed',
+    });
+  });
+});
+
+describe('TaskOrchestratorService dispatch recovery and assignment scope', () => {
+  it('retains earlier dispatch IDs so their outcomes can be recorded after a later dispatch', async () => {
+    const firstStep = {
+      id: 'step-a',
+      profile: 'backend-nestjs',
+      appId: 'app-a',
+      targetBranch: 'feature/x',
+      workingDirectory: 'application',
+    };
+    const secondStep = {
+      id: 'step-b',
+      profile: 'backend-nestjs',
+      appId: 'app-b',
+      targetBranch: 'feature/x',
+      workingDirectory: 'application',
+    };
+    const task = {
+      id: 'task-history',
+      kind: 'task',
+      projectId: 'project-x',
+      data: { status: 'review_ready', approvedPlan: { steps: [firstStep, secondStep] }, subtaskIds: [] as string[] },
+    };
+    const firstAssignment = {
+      id: 'assignment-a',
+      kind: 'subtask',
+      data: { ...firstStep, taskId: task.id, status: 'awaiting_outcome' },
+    };
+    const secondAssignment = {
+      id: 'assignment-b',
+      kind: 'subtask',
+      data: { ...secondStep, taskId: task.id, status: 'awaiting_outcome' },
+    };
+    const assignments = [firstAssignment, secondAssignment];
+    const records = {
+      get: jest.fn(async (id: string) =>
+        id === task.id ? task : assignments.find((assignment) => assignment.id === id),
+      ),
+      create: jest.fn().mockResolvedValueOnce(firstAssignment).mockResolvedValueOnce(secondAssignment),
+      list: jest.fn().mockResolvedValue([]),
+      updateTask: jest.fn(async (_id: string, patch: Record<string, any>) => {
+        task.data = { ...task.data, ...patch };
+        return task;
+      }),
+      update: jest.fn().mockResolvedValue(firstAssignment),
+    };
+    const profiles = { load: jest.fn().mockResolvedValue({ role: 'backend-nestjs' }) };
+    const service = new TaskOrchestratorService(records as any, profiles as any, {} as any, {} as any, {} as any);
+    jest.spyOn(service as any, 'stepRepoPath').mockResolvedValue('/repo');
+    jest.spyOn(service as any, 'executeStep').mockResolvedValue(undefined);
+
+    await service.dispatchAssignment(task.id, firstStep.id, {});
+    await service.dispatchAssignment(task.id, secondStep.id, {});
+    await service.recordAssignmentOutcome(task.id, firstAssignment.id, 'completed', 'First step complete', [
+      'test passed',
+    ]);
+
+    expect(task.data.subtaskIds).toEqual([firstAssignment.id, secondAssignment.id]);
+    expect(task.data.status).toBe('review_ready');
+    expect(records.updateTask).toHaveBeenCalledTimes(2);
+    expect(records.updateTask).toHaveBeenLastCalledWith(task.id, {
+      subtaskIds: [firstAssignment.id, secondAssignment.id],
+    });
+    expect(records.update).toHaveBeenCalledWith(
+      firstAssignment.id,
+      expect.objectContaining({ status: 'completed', outcomeStatus: 'completed' }),
+    );
+  });
+
+  it('allows the LLM-selected dispatch even when another session may share the checkout', async () => {
+    const step = {
+      id: 'step-x',
+      profile: 'backend-nestjs',
+      appId: 'app-x',
+      targetBranch: 'feature/x',
+      workingDirectory: 'application',
+    };
+    const task = { id: 'task-x', kind: 'task', projectId: 'project-x', data: { approvedPlan: { steps: [step] } } };
+    const assignment = { id: 'assignment-x', data: { ...step, taskId: task.id, status: 'queued' } };
+    const records = {
+      get: jest.fn().mockResolvedValue(task),
+      list: jest.fn().mockResolvedValue([]),
+      create: jest.fn().mockResolvedValue(assignment),
+      updateTask: jest.fn().mockResolvedValue(task),
+    };
+    const profiles = { load: jest.fn().mockResolvedValue({ role: 'backend-nestjs' }) };
+    const service = new TaskOrchestratorService(records as any, profiles as any, {} as any, {} as any, {} as any);
+    jest.spyOn(service as any, 'stepRepoPath').mockResolvedValue('/repo/app-x');
+    jest.spyOn(service as any, 'executeStep').mockResolvedValue({ status: 'running' });
+    await expect(service.dispatchAssignment(task.id, step.id, {})).resolves.toMatchObject({
+      taskId: task.id,
+      subtaskId: assignment.id,
+      status: 'running',
+    });
+    expect(records.create).toHaveBeenCalledWith(
+      'subtask',
+      expect.objectContaining({ id: step.id, taskId: task.id }),
+      'project-x',
+    );
+  });
+
+  it('returns the assignment ID and persists blocked state when a running dispatch fails', async () => {
+    const step = {
+      id: 'step-x',
+      profile: 'backend-nestjs',
+      appId: 'app-x',
+      targetBranch: 'feature/x',
+      workingDirectory: 'application',
+    };
+    const task = { id: 'task-x', kind: 'task', projectId: 'project-x', data: { approvedPlan: { steps: [step] } } };
+    const assignment = { id: 'assignment-x', data: { ...step, taskId: task.id, status: 'queued' } };
+    const records = {
+      get: jest.fn().mockResolvedValueOnce(task).mockResolvedValueOnce(assignment),
+      list: jest.fn().mockResolvedValue([]),
+      create: jest.fn().mockResolvedValue(assignment),
+      update: jest.fn(),
+      updateTask: jest.fn(),
+    };
+    const profiles = { load: jest.fn().mockResolvedValue({ role: 'backend-nestjs' }) };
+    const service = new TaskOrchestratorService(records as any, profiles as any, {} as any, {} as any, {} as any);
+    jest.spyOn(service as any, 'stepRepoPath').mockResolvedValue('/repo');
+    jest.spyOn(service as any, 'executeStep').mockRejectedValue(new Error('app-server disconnected'));
+
+    await expect(service.dispatchAssignment(task.id, step.id, {})).resolves.toMatchObject({
+      taskId: task.id,
+      subtaskId: assignment.id,
+      status: 'blocked',
+      error: 'app-server disconnected',
+    });
+    expect(records.update).toHaveBeenCalledWith(
+      assignment.id,
+      expect.objectContaining({ status: 'blocked', error: 'app-server disconnected' }),
+    );
+  });
+
+  it('rejects an outcome for a stale subtask even when it belongs to the same task and approved step', async () => {
+    const task = {
+      id: 'task-x',
+      kind: 'task',
+      data: { approvedPlan: { steps: [{ id: 'step-x' }] }, subtaskIds: ['current-assignment'] },
+    };
+    const stale = {
+      id: 'stale-assignment',
+      kind: 'subtask',
+      data: { id: 'step-x', taskId: task.id, status: 'blocked' },
+    };
+    const records = { get: jest.fn().mockResolvedValueOnce(task).mockResolvedValueOnce(stale), update: jest.fn() };
+    const service = new TaskOrchestratorService(records as any, {} as any, {} as any, {} as any, {} as any);
+    await expect(
+      service.recordAssignmentOutcome(task.id, stale.id, 'completed', 'Done', ['test passed']),
+    ).rejects.toThrow(/dispatched assignment/);
+    expect(records.update).not.toHaveBeenCalled();
   });
 });

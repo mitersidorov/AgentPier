@@ -18,14 +18,19 @@ export class CodexSessionCoordinatorService {
     return this.records.update(id, data);
   }
 
+  async attachTurn(sessionId: string, turnId: string) {
+    const session = await this.records.get(sessionId);
+    if (session.kind !== 'session') throw new Error('sessionId must refer to a session');
+    const status = session.data.status === 'starting' ? 'running' : session.data.status;
+    return this.records.update(sessionId, { ...session.data, turnId, status });
+  }
+
   createMessage(data: Record<string, any>, projectId?: string) {
     return this.records.create('agent-message', data, projectId);
   }
 
   async detachActiveSessions() {
-    const active = (await this.records.list('session')).filter((row) =>
-      ['running', 'waiting_for_user'].includes(row.data.status),
-    );
+    const active = await this.records.listActiveSessions();
     for (const session of active) await this.records.update(session.id, { ...session.data, attached: false });
   }
 
@@ -33,8 +38,7 @@ export class CodexSessionCoordinatorService {
     const method = event.method;
     const rawParams = event.params || {};
     const params = this.redact(rawParams);
-    const sessions = await this.records.list('session');
-    const session = sessions.find((row) => row.data.threadId === params.threadId);
+    const session = await this.records.findSessionByThreadId(params.threadId);
     if (!session) return null;
     try {
       await this.records.create(

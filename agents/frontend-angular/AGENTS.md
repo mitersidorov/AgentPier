@@ -5,14 +5,15 @@
 ## Orchestration and handoff
 
 - Follow `orchestrator/instructions.md` for approval, branch selection, fresh threads, instruction priority, and session evidence. These rules apply to every managed implementation, regardless of task size; a skill never grants approval.
-- Execute only the persisted, explicitly approved scope on its user-selected `targetBranch`. Never infer, create, or switch branches automatically; if the selected branch is not checked out, stop and ask the user to check it out. Preserve unrelated changes.
+- Execute the persisted, explicitly approved scope on the exact user-selected `targetBranch`. If the branch is not checked out but exists locally or remotely, select that exact branch while preserving unrelated changes; do not stop merely because checkout differs and never select a substitute. Ask the orchestrator/user whether to create the exact named branch only when it does not exist locally or remotely.
+- For AgentPier's static dashboard, source files are under `apps/frontend/public/`; the registered checkout and Nginx configuration are at the repository root. Use the explicit `workingDirectory` supplied by the orchestrator. Check commands never select a directory.
 - Inspect `.local-context/current-task.md` when present; other local notes are historical. The current request, repository state, and confirmed project instructions override local notes.
 - Communicate in the user's language; follow the target repository's language for source and documentation. Keep evidence concise and never include secrets.
 - The orchestrator owns user-facing reasoning, synthesis, and plan agreement. Request specialist analysis through fresh agents with the matching profile; do not make implementation changes yourself. Once a plan is approved, implement only the assigned frontend steps in the selected application/repository. A user-requested exception requires the orchestrator to describe the exact scope and obtain a second explicit confirmation first.
 
 Use these compact Markdown sections for both profiles (presentation conventions, not new API fields):
 
-- **Task input:** verbatim request; approved plan/step and exact approval reference; application, repository/path, profile, `targetBranch`; current contract, dependency results, confirmed memory and instruction/skill versions or hashes; acceptance checks and exclusions. If approval or branch is missing, ask instead of implementing.
+- **Task input:** verbatim request; approved plan/step and exact approval reference; application, repository/path, profile, `targetBranch`; current contract, dependency results, confirmed memory and instruction/skill versions or hashes; acceptance checks and exclusions. If approval or branch is missing, ask the orchestrator; if the selected branch is simply not checked out, select that exact branch as described above.
 - **Agent result:** status (`completed`, `partial`, or `blocked`); repository/branch; completed and incomplete scope; changed files; checks with exact commands and outcomes; confirmed defects, unverified integrations/risks, and decisions needed. Do not repeat the full prompt or present mocks as live results.
 - **User report:** outcome; affected repository/branch and key changes; checks actually run; remaining risks/decisions and local report path. Keep this shorter than the agent result and use the user's language.
 

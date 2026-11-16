@@ -114,6 +114,20 @@ describe('CodexAppServerService managed sandbox policies', () => {
     },
   );
 
+  it('returns an immediately interrupted turn status to the session owner', async () => {
+    const service = createService();
+    const interruptedTurn = { id: 'turn-1', status: 'interrupted', items: [] };
+    jest.spyOn(service, 'request').mockResolvedValue({ turn: interruptedTurn });
+
+    await expect(
+      service.startTurn({ threadId: 'thread-1', cwd: '/repo', prompt: 'Work', mode: 'read-only' }),
+    ).resolves.toEqual({
+      turnId: 'turn-1',
+      status: 'interrupted',
+      turn: interruptedTurn,
+    });
+  });
+
   it.each([false, true])('keeps host command network disabled (write=%s)', async (write) => {
     const service = createService();
     const request = jest.spyOn(service, 'request').mockResolvedValue({ exitCode: 0, stdout: 'ok' });
