@@ -795,11 +795,7 @@
         document.getElementById('agents').innerHTML = agents.length
           ? agents
               .map((agent, index) => {
-                const activeSessions = dashboard.sessions.filter(
-                  (session) =>
-                    canonicalProfile(session.data.profile) === agent.role &&
-                    ['running', 'starting'].includes(session.data.status),
-                ).length;
+                const activeSessions = AgentPierDashboard.activeSessionsForAgent(dashboard.sessions, agent.role, canonicalProfile).length;
                 return `<button type="button" class="agent-card" data-agent="${index}"><span><span class="item-title">${esc(agent.name || titleCase(agent.role))}</span><span class="agent-role" style="display:block">Stack profile · ${agent.skills.length} skills</span><span class="agent-role" style="display:block">Default model · ${esc(agent.defaultModel || 'not configured')}</span><span class="agent-role" style="display:block">Reasoning effort · ${esc(agent.defaultReasoningEffort || 'medium')}</span></span><span class="pill ${activeSessions ? '' : 'dim'}">${activeSessions} active</span></button>`;
               })
               .join('')

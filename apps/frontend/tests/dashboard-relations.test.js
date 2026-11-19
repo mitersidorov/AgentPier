@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { linkedRepositories, confirmedInstructions, setInstructionText } = require('../public/dashboard-relations.js');
+const { linkedRepositories, confirmedInstructions, setInstructionText, activeSessionsForAgent } = require('../public/dashboard-relations.js');
 const {
   createDashboardLoadState,
   markDashboardLoadSuccess,
@@ -76,4 +76,17 @@ test('uses legacy application fields when an explicit repository id is absent', 
   const repository = { id: 'repo-1', data: { applicationId: 'app-1' } };
 
   assert.deepEqual(linkedRepositories(application, [repository]), [repository]);
+});
+
+test('counts running and waiting sessions for the matching canonical profile, excluding terminal states', () => {
+  const sessions = ['running', 'starting', 'waiting_for_user', 'completed', 'failed'].map((status) => ({
+    data: { profile: 'frontend', status },
+  }));
+  sessions.push({ data: { profile: 'backend', status: 'running' } });
+  const canonicalProfile = (profile) => ({ frontend: 'frontend-angular' })[profile] || profile;
+
+  assert.deepEqual(
+    activeSessionsForAgent(sessions, 'frontend-angular', canonicalProfile).map((session) => session.data.status),
+    ['running', 'starting', 'waiting_for_user'],
+  );
 });

@@ -23,7 +23,15 @@
     element.textContent = instruction.data.content || instruction.data.instruction || JSON.stringify(instruction.data, null, 2);
   }
 
-  root.AgentPierDashboard = { linkedRepositories, confirmedInstructions, setInstructionText };
+  function activeSessionsForAgent(sessions, role, canonicalProfile) {
+    return sessions.filter(
+      (session) =>
+        canonicalProfile(session.data.profile) === role &&
+        ['running', 'starting', 'waiting_for_user'].includes(session.data.status),
+    );
+  }
+
+  root.AgentPierDashboard = { linkedRepositories, confirmedInstructions, setInstructionText, activeSessionsForAgent };
   if (typeof module !== 'undefined' && module.exports) {
     module.exports = root.AgentPierDashboard;
   }

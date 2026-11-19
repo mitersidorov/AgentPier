@@ -188,9 +188,11 @@ export class CodexAppServerService implements OnModuleDestroy {
       throw new Error('Docker socket path must be absolute');
     const releasePolicy =
       input.releaseOperations === undefined ? undefined : await this.releasePolicy(input.cwd, input.releaseOperations);
+    const gitMetadataRoots = input.mode === 'read-only' ? [] : await this.gitMetadataRoots(input.cwd);
     const writableRoots = [
       ...new Set([
         input.cwd,
+        ...gitMetadataRoots,
         ...(releasePolicy?.writableRoots || []),
         ...(input.dockerSocketPath ? [input.dockerSocketPath] : []),
       ]),
@@ -213,6 +215,14 @@ export class CodexAppServerService implements OnModuleDestroy {
       turnId: turn.id,
       ...(typeof turn.status === 'string' ? { status: turn.status, turn } : {}),
     };
+  }
+
+  private async gitMetadataRoots(cwd: string): Promise<string[]> {
+    const [gitDir, commonDir] = await Promise.all([
+      this.runCommand(cwd, ['git', 'rev-parse', '--absolute-git-dir']),
+      this.runCommand(cwd, ['git', 'rev-parse', '--path-format=absolute', '--git-common-dir']),
+    ]);
+    return [...new Set([gitDir.trim(), commonDir.trim()].filter(isAbsolute))];
   }
 
   async localDockerSocketPath(cwd: string) {

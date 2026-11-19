@@ -88,6 +88,7 @@ describe('CodexAppServerService managed sandbox policies', () => {
     'keeps ordinary %s turns network-disabled without broadening filesystem access or approvals',
     async (mode) => {
       const service = createService();
+      jest.spyOn(service, 'runCommand').mockResolvedValue('/repo/.git');
       const request = jest.spyOn(service, 'request').mockResolvedValue({ turn: { id: 'turn-1' } });
 
       await expect(service.startTurn({ threadId: 'thread-1', cwd: '/repo', prompt: 'Work', mode })).resolves.toEqual({
@@ -102,7 +103,7 @@ describe('CodexAppServerService managed sandbox policies', () => {
         sandboxPolicy:
           mode === 'read-only'
             ? { type: 'readOnly', networkAccess: false }
-            : { type: 'workspaceWrite', writableRoots: ['/repo'], networkAccess: false },
+            : { type: 'workspaceWrite', writableRoots: ['/repo', '/repo/.git'], networkAccess: false },
       });
 
       // Continued turns inherit the accepted thread policy; do not reset it.
@@ -113,6 +114,31 @@ describe('CodexAppServerService managed sandbox policies', () => {
       });
     },
   );
+
+  it('grants execution turns access to git metadata but keeps analysis read-only', async () => {
+    const service = createService();
+    const command = jest
+      .spyOn(service, 'runCommand')
+      .mockResolvedValueOnce('/repo/.git')
+      .mockResolvedValueOnce('/repo/.git');
+    const request = jest.spyOn(service, 'request').mockResolvedValue({ turn: { id: 'turn-1' } });
+    await service.startTurn({ threadId: 't', cwd: '/repo', prompt: 'Work', mode: 'workspace-write' });
+    expect(command).toHaveBeenCalledTimes(2);
+    expect(request).toHaveBeenCalledWith(
+      'turn/start',
+      expect.objectContaining({
+        sandboxPolicy: { type: 'workspaceWrite', writableRoots: ['/repo', '/repo/.git'], networkAccess: false },
+      }),
+    );
+    command.mockClear();
+    request.mockClear();
+    await service.startTurn({ threadId: 't', cwd: '/repo', prompt: 'Analyze', mode: 'read-only' });
+    expect(command).not.toHaveBeenCalled();
+    expect(request).toHaveBeenCalledWith(
+      'turn/start',
+      expect.objectContaining({ sandboxPolicy: { type: 'readOnly', networkAccess: false } }),
+    );
+  });
 
   it('returns an immediately interrupted turn status to the session owner', async () => {
     const service = createService();
@@ -149,6 +175,7 @@ describe('CodexAppServerService managed sandbox policies', () => {
 
   it('grants the local Docker socket only when an approved execution step supplies its socket path', async () => {
     const service = createService();
+    jest.spyOn(service, 'runCommand').mockResolvedValue('/repo/apps/backend/.git');
     const request = jest.spyOn(service, 'request').mockResolvedValue({ turn: { id: 'turn-docker' } });
     await service.startTurn({
       threadId: 'thread-1',
@@ -163,7 +190,7 @@ describe('CodexAppServerService managed sandbox policies', () => {
         approvalPolicy: 'never',
         sandboxPolicy: {
           type: 'workspaceWrite',
-          writableRoots: ['/repo/apps/backend', '/Users/test/.docker/run/docker.sock'],
+          writableRoots: ['/repo/apps/backend', '/repo/apps/backend/.git', '/Users/test/.docker/run/docker.sock'],
           networkAccess: false,
         },
       }),
