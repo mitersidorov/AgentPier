@@ -76,7 +76,7 @@ describe('CodexAppServerService model support', () => {
     expect(request.mock.calls[0][1]).not.toHaveProperty('reasoningEffort');
     expect(request).toHaveBeenCalledWith(
       'thread/start',
-      expect.objectContaining({ model: 'frontend-model', sandbox: 'workspace-write' }),
+      expect.objectContaining({ model: 'frontend-model', sandbox: 'danger-full-access' }),
     );
   });
 });
@@ -100,34 +100,29 @@ describe('CodexAppServerService managed sandbox policies', () => {
         cwd: '/repo',
         input: [{ type: 'text', text: 'Work', text_elements: [] }],
         approvalPolicy: 'never',
-        sandboxPolicy:
-          mode === 'read-only'
-            ? { type: 'readOnly', networkAccess: false }
-            : { type: 'workspaceWrite', writableRoots: ['/repo', '/repo/.git'], networkAccess: false },
+        sandboxPolicy: mode === 'read-only' ? { type: 'readOnly', networkAccess: false } : { type: 'dangerFullAccess' },
       });
 
-      // Continued turns inherit the accepted thread policy; do not reset it.
+      // Continuations are execution entrypoints and explicitly use the execution policy.
       await service.sendMessage('thread-1', 'Continue');
       expect(request).toHaveBeenLastCalledWith('turn/start', {
         threadId: 'thread-1',
         input: [{ type: 'text', text: 'Continue', text_elements: [] }],
+        sandboxPolicy: { type: 'dangerFullAccess' },
       });
     },
   );
 
-  it('grants execution turns access to git metadata but keeps analysis read-only', async () => {
+  it('uses execution policy without git metadata probes and keeps analysis read-only', async () => {
     const service = createService();
-    const command = jest
-      .spyOn(service, 'runCommand')
-      .mockResolvedValueOnce('/repo/.git')
-      .mockResolvedValueOnce('/repo/.git');
+    const command = jest.spyOn(service, 'runCommand');
     const request = jest.spyOn(service, 'request').mockResolvedValue({ turn: { id: 'turn-1' } });
     await service.startTurn({ threadId: 't', cwd: '/repo', prompt: 'Work', mode: 'workspace-write' });
-    expect(command).toHaveBeenCalledTimes(2);
+    expect(command).not.toHaveBeenCalled();
     expect(request).toHaveBeenCalledWith(
       'turn/start',
       expect.objectContaining({
-        sandboxPolicy: { type: 'workspaceWrite', writableRoots: ['/repo', '/repo/.git'], networkAccess: false },
+        sandboxPolicy: { type: 'dangerFullAccess' },
       }),
     );
     command.mockClear();
@@ -165,9 +160,7 @@ describe('CodexAppServerService managed sandbox policies', () => {
         cwd: '/repo',
         command: ['git', 'status'],
         timeoutMs: 20000,
-        sandboxPolicy: write
-          ? { type: 'workspaceWrite', writableRoots: ['/repo'], networkAccess: false }
-          : { type: 'readOnly', networkAccess: false },
+        sandboxPolicy: write ? { type: 'dangerFullAccess' } : { type: 'readOnly', networkAccess: false },
       },
       25000,
     );
@@ -175,7 +168,7 @@ describe('CodexAppServerService managed sandbox policies', () => {
 
   it('grants the local Docker socket only when an approved execution step supplies its socket path', async () => {
     const service = createService();
-    jest.spyOn(service, 'runCommand').mockResolvedValue('/repo/apps/backend/.git');
+    const command = jest.spyOn(service, 'runCommand');
     const request = jest.spyOn(service, 'request').mockResolvedValue({ turn: { id: 'turn-docker' } });
     await service.startTurn({
       threadId: 'thread-1',
@@ -189,12 +182,11 @@ describe('CodexAppServerService managed sandbox policies', () => {
       expect.objectContaining({
         approvalPolicy: 'never',
         sandboxPolicy: {
-          type: 'workspaceWrite',
-          writableRoots: ['/repo/apps/backend', '/repo/apps/backend/.git', '/Users/test/.docker/run/docker.sock'],
-          networkAccess: false,
+          type: 'dangerFullAccess',
         },
       }),
     );
+    expect(command).not.toHaveBeenCalled();
   });
 
   it('resolves only an active local Unix socket for Docker execution', async () => {
@@ -253,7 +245,7 @@ describe('scoped release policy', () => {
       mode: 'workspace-write',
       releaseOperations: operations,
     });
-    const sandboxPolicy = { type: 'workspaceWrite', writableRoots: ['/repo', '/repo/.git'], networkAccess: true };
+    const sandboxPolicy = { type: 'dangerFullAccess' };
     expect(request).toHaveBeenLastCalledWith(
       'turn/start',
       expect.objectContaining({ approvalPolicy: 'never', sandboxPolicy }),

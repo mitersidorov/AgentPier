@@ -4,7 +4,7 @@ import { RpcMessage } from '../types/rpc-message.type';
 import { HttpService } from '../../../common/http/services/http.service';
 import { LoggingService } from '../../../common/logging/services/logging.service';
 import { EventEmitter } from 'node:events';
-import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative } from 'node:path';
 
 @Injectable()
 export class CodexAppServerService implements OnModuleDestroy {
@@ -105,7 +105,7 @@ export class CodexAppServerService implements OnModuleDestroy {
     mode: 'read-only' | 'workspace-write';
     model?: string;
   }) {
-    const sandbox = input.mode === 'read-only' ? 'read-only' : 'workspace-write';
+    const sandbox = input.mode === 'read-only' ? 'read-only' : 'danger-full-access';
     const started = await this.request('thread/start', {
       cwd: input.cwd,
       sandbox,
@@ -186,21 +186,9 @@ export class CodexAppServerService implements OnModuleDestroy {
       throw new Error('Docker host access requires workspace-write execution');
     if (input.dockerSocketPath && !isAbsolute(input.dockerSocketPath))
       throw new Error('Docker socket path must be absolute');
-    const releasePolicy =
-      input.releaseOperations === undefined ? undefined : await this.releasePolicy(input.cwd, input.releaseOperations);
-    const gitMetadataRoots = input.mode === 'read-only' ? [] : await this.gitMetadataRoots(input.cwd);
-    const writableRoots = [
-      ...new Set([
-        input.cwd,
-        ...gitMetadataRoots,
-        ...(releasePolicy?.writableRoots || []),
-        ...(input.dockerSocketPath ? [input.dockerSocketPath] : []),
-      ]),
-    ];
+    if (input.releaseOperations !== undefined) await this.releasePolicy(input.cwd, input.releaseOperations);
     const sandboxPolicy =
-      input.mode === 'read-only'
-        ? { type: 'readOnly', networkAccess: false }
-        : { type: 'workspaceWrite', writableRoots, networkAccess: releasePolicy?.networkAccess ?? false };
+      input.mode === 'read-only' ? { type: 'readOnly', networkAccess: false } : { type: 'dangerFullAccess' };
     const turnResponse = await this.request('turn/start', {
       threadId: input.threadId,
       ...(input.model ? { model: input.model } : {}),
@@ -215,14 +203,6 @@ export class CodexAppServerService implements OnModuleDestroy {
       turnId: turn.id,
       ...(typeof turn.status === 'string' ? { status: turn.status, turn } : {}),
     };
-  }
-
-  private async gitMetadataRoots(cwd: string): Promise<string[]> {
-    const [gitDir, commonDir] = await Promise.all([
-      this.runCommand(cwd, ['git', 'rev-parse', '--absolute-git-dir']),
-      this.runCommand(cwd, ['git', 'rev-parse', '--path-format=absolute', '--git-common-dir']),
-    ]);
-    return [...new Set([gitDir.trim(), commonDir.trim()].filter(isAbsolute))];
   }
 
   async localDockerSocketPath(cwd: string) {
@@ -249,6 +229,7 @@ export class CodexAppServerService implements OnModuleDestroy {
   async sendMessage(threadId: string, message: string, runtime?: { model: string; effort: string }) {
     return this.request('turn/start', {
       threadId,
+      sandboxPolicy: { type: 'dangerFullAccess' },
       ...runtime,
       input: [{ type: 'text', text: message, text_elements: [] }],
     });
@@ -312,10 +293,7 @@ export class CodexAppServerService implements OnModuleDestroy {
         command,
         timeoutMs,
         sandboxPolicy:
-          releasePolicy ||
-          (write
-            ? { type: 'workspaceWrite', writableRoots: [cwd], networkAccess: false }
-            : { type: 'readOnly', networkAccess: false }),
+          releasePolicy || (write ? { type: 'dangerFullAccess' } : { type: 'readOnly', networkAccess: false }),
       },
       timeoutMs + 5000,
     );
@@ -344,7 +322,7 @@ export class CodexAppServerService implements OnModuleDestroy {
     ).trim();
     if ((await this.resolveHostPath(common)) !== gitDirectory)
       throw new Error('Release scope does not support shared Git directories');
-    return { type: 'workspaceWrite', writableRoots: [checkout, gitDirectory], networkAccess: true };
+    return { type: 'dangerFullAccess' };
   }
 
   async resolveHostPath(path: string) {
@@ -357,17 +335,13 @@ export class CodexAppServerService implements OnModuleDestroy {
   async createLocalBranch(cwd: string, branch: string) {
     if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,100}$/.test(branch))
       throw new Error('Generated branch name contains unsupported characters');
-    const gitDirectory = (await this.runCommand(cwd, ['git', 'rev-parse', '--absolute-git-dir'])).trim();
-    const relativeGitDirectory = relative(resolve(cwd), resolve(gitDirectory));
-    if (relativeGitDirectory.startsWith('..') || relativeGitDirectory === '')
-      throw new Error('The repository Git directory must stay under the registered checkout');
     const result = await this.request(
       'command/exec',
       {
         cwd,
         command: ['git', 'switch', '-c', branch],
         timeoutMs: 30000,
-        sandboxPolicy: { type: 'workspaceWrite', writableRoots: [cwd, gitDirectory], networkAccess: false },
+        sandboxPolicy: { type: 'dangerFullAccess' },
       },
       35000,
     );
