@@ -1,5 +1,7 @@
 # AgentPier
 
+[![M8ven Score](https://m8ven.ai/badge/mcp/mitersidorov-agentpier-hh9pwy?v=2fa97726a10b7f5e285eedf59ae9da8a)](https://m8ven.ai/mcp/mitersidorov-agentpier-hh9pwy?s=readme)
+
 AgentPier is a local project manager and MCP server for Codex work across several local applications and Git repositories. It stores project context and task history in MySQL, runs fresh Codex app-server threads for analysis and approved implementation, and leaves changes in local branches for the user to review. It never pushes, opens pull requests, or merges as part of a normal task.
 
 ## Repository layout
