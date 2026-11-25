@@ -182,20 +182,37 @@ const repositoryDataSchema = {
   additionalProperties: false,
 };
 
-const tools: Array<{ name: string; description: string; inputSchema: Record<string, unknown> }> = [
+type ToolAnnotations = {
+  readOnlyHint: boolean;
+  destructiveHint: boolean;
+  idempotentHint: boolean;
+  openWorldHint: boolean;
+};
+
+type McpTool = {
+  name: string;
+  description: string;
+  inputSchema: Record<string, unknown>;
+  annotations: ToolAnnotations;
+};
+
+const tools: McpTool[] = [
   {
     name: 'manager_status',
     description: 'Check Manager, MySQL and the live Codex app-server WebSocket',
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     inputSchema: { type: 'object', properties: {}, additionalProperties: false },
   },
   {
     name: 'list_projects',
     description: 'List registered projects',
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: { type: 'object', properties: {}, additionalProperties: false },
   },
   {
     name: 'register_project',
     description: 'Register a project and its absolute Mac checkout path',
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     inputSchema: {
       type: 'object',
       properties: {
@@ -211,6 +228,7 @@ const tools: Array<{ name: string; description: string; inputSchema: Record<stri
   {
     name: 'update_project',
     description: 'Edit an existing project record: name, checkout path, description, instructions, or constraints',
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
     inputSchema: {
       type: 'object',
       properties: {
@@ -235,6 +253,7 @@ const tools: Array<{ name: string; description: string; inputSchema: Record<stri
     name: 'delete_project',
     description:
       'Confirm active turns have stopped, then transactionally delete project records; errors preserve records and checkout files are kept',
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
     inputSchema: {
       type: 'object',
       properties: { projectId: { type: 'string', format: 'uuid' } },
@@ -244,6 +263,7 @@ const tools: Array<{ name: string; description: string; inputSchema: Record<stri
   {
     name: 'manage_applications',
     description: 'List, create, or edit application and repository records linked to a project',
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
     inputSchema: {
       type: 'object',
       properties: {
@@ -281,16 +301,19 @@ const tools: Array<{ name: string; description: string; inputSchema: Record<stri
   {
     name: 'list_agents',
     description: 'List the available stack profiles, instruction/skill versions, and persisted default models',
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: { type: 'object', properties: {}, additionalProperties: false },
   },
   {
     name: 'list_models',
     description: 'List models available from the live Codex app-server model catalog',
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     inputSchema: { type: 'object', properties: {}, additionalProperties: false },
   },
   {
     name: 'update_agent_profile',
     description: 'Set the default model and/or supported reasoning effort for a built-in stack profile',
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
     inputSchema: {
       type: 'object',
       properties: {
@@ -306,6 +329,7 @@ const tools: Array<{ name: string; description: string; inputSchema: Record<stri
   {
     name: 'get_project_context',
     description: 'Read project instructions, registered apps and confirmed project memory',
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: {
       type: 'object',
       properties: { projectId: { type: 'string', format: 'uuid' } },
@@ -316,6 +340,7 @@ const tools: Array<{ name: string; description: string; inputSchema: Record<stri
   {
     name: 'update_project_context',
     description: 'Create or update a project instruction or memory record with provenance',
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
     inputSchema: {
       type: 'object',
       properties: {
@@ -332,6 +357,7 @@ const tools: Array<{ name: string; description: string; inputSchema: Record<stri
     name: 'analyze_task',
     description:
       'Create a task record for the LLM orchestrator; it selects and dispatches read-only analysis sessions explicitly',
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     inputSchema: {
       type: 'object',
       properties: {
@@ -344,12 +370,14 @@ const tools: Array<{ name: string; description: string; inputSchema: Record<stri
   {
     name: 'get_analysis_results',
     description: 'Read saved analysis session results and session IDs',
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: { type: 'object', properties: { taskId: { type: 'string', format: 'uuid' } }, required: ['taskId'] },
   },
   {
     name: 'dispatch_orchestration_analysis',
     description:
       'Start one read-only analysis session selected by the LLM orchestrator for an explicit profile and application',
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
     inputSchema: {
       type: 'object',
       properties: {
@@ -368,6 +396,7 @@ const tools: Array<{ name: string; description: string; inputSchema: Record<stri
   {
     name: 'save_plan',
     description: 'Save or replace a draft plan after discussion of analysis results',
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
     inputSchema: {
       type: 'object',
       properties: { taskId: { type: 'string', format: 'uuid' }, plan: taskPlanSchema },
@@ -377,6 +406,7 @@ const tools: Array<{ name: string; description: string; inputSchema: Record<stri
   {
     name: 'approve_plan',
     description: 'Persist the final plan after the user explicitly confirms it',
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
     inputSchema: {
       type: 'object',
       properties: { taskId: { type: 'string', format: 'uuid' }, plan: taskPlanSchema, userConfirmed: { const: true } },
@@ -386,6 +416,7 @@ const tools: Array<{ name: string; description: string; inputSchema: Record<stri
   {
     name: 'execute_task',
     description: 'Record the LLM orchestrator decision to begin an approved plan; dispatch chosen steps individually',
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
     inputSchema: {
       type: 'object',
       properties: {
@@ -400,6 +431,7 @@ const tools: Array<{ name: string; description: string; inputSchema: Record<stri
     name: 'complete_task_from_evidence',
     description:
       'Complete a blocked or cancelled approved subtask from user-confirmed checks already run outside the managed session; does not rerun implementation or tests',
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
     inputSchema: {
       type: 'object',
       properties: {
@@ -415,16 +447,19 @@ const tools: Array<{ name: string; description: string; inputSchema: Record<stri
   {
     name: 'get_task_status',
     description: 'Get task, subtask, Codex session and reconnect state',
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
     inputSchema: { type: 'object', properties: { taskId: { type: 'string', format: 'uuid' } }, required: ['taskId'] },
   },
   {
     name: 'get_agent_messages',
     description: 'Read agent questions, streamed messages and user replies',
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: { type: 'object', properties: { taskId: { type: 'string', format: 'uuid' } }, required: ['taskId'] },
   },
   {
     name: 'send_agent_message',
     description: 'Answer an agent question or send additional direction to a managed thread',
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
     inputSchema: {
       type: 'object',
       properties: {
@@ -444,21 +479,25 @@ const tools: Array<{ name: string; description: string; inputSchema: Record<stri
   {
     name: 'cancel_task',
     description: 'Interrupt active task turns while keeping saved task history',
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
     inputSchema: { type: 'object', properties: { taskId: { type: 'string', format: 'uuid' } }, required: ['taskId'] },
   },
   {
     name: 'get_task_results',
     description: 'Return Codex results, local branches, changed files and checks',
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
     inputSchema: { type: 'object', properties: { taskId: { type: 'string', format: 'uuid' } }, required: ['taskId'] },
   },
   {
     name: 'read_orchestration_task',
     description: 'Read one task-scoped record including its selected plan, analysis and recorded decisions',
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: { type: 'object', properties: { taskId: { type: 'string', format: 'uuid' } }, required: ['taskId'] },
   },
   {
     name: 'record_orchestration_decision',
     description: 'Append an orchestrator-selected decision to a task record; this does not execute work',
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     inputSchema: {
       type: 'object',
       properties: {
@@ -472,6 +511,7 @@ const tools: Array<{ name: string; description: string; inputSchema: Record<stri
   {
     name: 'dispatch_orchestration_assignment',
     description: 'Dispatch exactly one explicitly approved assignment selected by the orchestrator with its context',
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
     inputSchema: {
       type: 'object',
       properties: {
@@ -486,6 +526,7 @@ const tools: Array<{ name: string; description: string; inputSchema: Record<stri
   {
     name: 'record_orchestration_task_status',
     description: 'Persist the orchestrator-selected task status and decision independently of assignment outcomes',
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
     inputSchema: {
       type: 'object',
       properties: {
@@ -514,6 +555,7 @@ const tools: Array<{ name: string; description: string; inputSchema: Record<stri
   {
     name: 'record_assignment_outcome',
     description: 'Persist the orchestrator-selected assignment status, outcome, and evidence',
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
     inputSchema: {
       type: 'object',
       properties: {
@@ -531,11 +573,13 @@ const tools: Array<{ name: string; description: string; inputSchema: Record<stri
     name: 'backup_database',
     description:
       'Upload a consistent MySQL backup to the configured remote S3 bucket and optionally verify an isolated restore',
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
     inputSchema: { type: 'object', properties: { verifyRestore: { type: 'boolean' } } },
   },
   {
     name: 'get_backup_status',
     description: 'List backup/restore operation journal records',
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: { type: 'object', properties: {} },
   },
 ];

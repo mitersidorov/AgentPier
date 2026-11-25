@@ -4,7 +4,7 @@
   "description": "Local project manager and MCP server for user-approved Codex workflows",
   "author": "",
   "private": true,
-  "license": "UNLICENSED",
+  "license": "MIT",
   "scripts": {
     "build": "nest build",
     "format": "prettier --write \"apps/manager/src/**/*.ts\"",
